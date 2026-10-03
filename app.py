@@ -7,7 +7,7 @@
 #
 # Required pip packages (including datasets):
 #
-#   pip install streamlit chromadb langchain langchain-community \
+#   pip install streamlit chromadb langchain langchain-community langchain-chroma \
 #       langchain-core langchain-text-splitters pypdf faster-whisper datasets
 #
 # System tools (not pip):
@@ -26,26 +26,26 @@ import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 
-import chromadb
 import streamlit as st
 from chromadb.config import Settings
 from datasets import load_dataset
-from datasets.utils.logging import disable_progress_bars
+# from datasets.utils.logging import disable_progress_bars
 from faster_whisper import WhisperModel
+from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.llms import Ollama
-from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_DATASETS_DISABLE_PROGRESS_BARS", "1")
-os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
-disable_progress_bars()
+# os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+# disable_progress_bars()
 
 logger = logging.getLogger("medicare")
 
@@ -60,6 +60,7 @@ WHISPER_COMPUTE_TYPE = "int8"
 KNOWLEDGE_BASE_DIR = Path("./knowledge_base")
 PERSIST_DIR = Path("./chroma_db")
 STATS_PATH = Path("./ingestion_stats.json")
+PROFILE_PATH = Path("./patient_profile.json")
 REBUILD_FLAG = Path("./.rebuild_requested")
 COLLECTION_NAME = "medi_care_knowledge"
 
@@ -96,7 +97,7 @@ HF_SOURCES = (
 )
 
 CLINICAL_PROMPT = PromptTemplate(
-    input_variables=["context", "symptoms"],
+    input_variables=["context", "symptoms", "profile"],
     template=(
         "You are MediCare Local, an on-device clinical information assistant "
         "for a healthcare prototype. You are not a physician. You do not "
@@ -106,15 +107,22 @@ CLINICAL_PROMPT = PromptTemplate(
         "curated medical question-answer pairs. If the context does not "
         "support a claim, say that the local knowledge base does not cover it. "
         "Do not invent citations, doses, or study results.\n\n"
+        "The health profile is information the user entered on this device. "
+        "Use age, the date of the last period, chronic conditions, and current "
+        "medicines to judge whether a retrieved passage applies. Do not tell "
+        "the user to start, stop, or change a medicine or dose. If a listed "
+        "condition or medicine may change what is safe, say that a clinician "
+        "needs to review it.\n\n"
         "If the symptoms suggest an emergency (trouble breathing, chest pain, "
         "fainting, one-sided weakness, severe bleeding, confusion, a rapidly "
         "worsening allergic reaction, or thoughts of self-harm), tell the "
         "person to contact emergency services now, before any other advice.\n\n"
         "Write in plain English with these sections:\n"
         "1. What to do right now\n"
-        "2. What the retrieved sources support\n"
-        "3. What a clinician should evaluate\n"
+        "2. What the retrieved sources support for this profile\n"
+        "3. What a clinician should evaluate, including conditions and medicines\n"
         "4. Limits of this prototype\n\n"
+        "Health profile:\n{profile}\n\n"
         "Retrieved context:\n{context}\n\n"
         "Reviewed symptom description:\n{symptoms}\n\n"
         "Response:"
@@ -452,32 +460,22 @@ def _index_is_ready() -> bool:
     return bool(stats and stats.get("complete") and sqlite_path.exists())
 
 
-def _persistent_client() -> chromadb.PersistentClient:
+def _open_vectorstore(embeddings: OllamaEmbeddings) -> Chroma:
+    """Open the local collection through langchain-chroma.
+
+    persist_directory makes Chroma use a PersistentClient under ./chroma_db.
+    """
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(
-        path=str(PERSIST_DIR),
-        settings=CHROMA_SETTINGS,
-    )
-
-
-def _open_vectorstore(
-    embeddings: OllamaEmbeddings,
-    client: chromadb.PersistentClient,
-) -> Chroma:
-    # Pass the already-open client so LangChain does not open a second
-    # SQLite connection against the same local collection.
     return Chroma(
-        client=client,
         collection_name=COLLECTION_NAME,
         embedding_function=embeddings,
+        persist_directory=str(PERSIST_DIR),
+        client_settings=CHROMA_SETTINGS,
     )
 
 
-def _reset_collection(client: chromadb.PersistentClient) -> None:
-    try:
-        client.delete_collection(COLLECTION_NAME)
-    except Exception:
-        logger.info("No existing %s collection to delete.", COLLECTION_NAME)
+def _reset_collection(vectorstore: Chroma) -> None:
+    vectorstore.reset_collection()
     if STATS_PATH.exists():
         STATS_PATH.unlink()
 
@@ -494,12 +492,10 @@ def _embed_documents(vectorstore: Chroma, documents: list[Document]) -> None:
         )
 
 
-def build_vectorstore(
-    embeddings: OllamaEmbeddings,
-    client: chromadb.PersistentClient,
-) -> tuple[Chroma, dict]:
+def build_vectorstore(embeddings: OllamaEmbeddings) -> tuple[Chroma, dict]:
     """Create the single local collection from PDFs and Hugging Face QA."""
-    _reset_collection(client)
+    vectorstore = _open_vectorstore(embeddings)
+    _reset_collection(vectorstore)
     documents, stats = collect_documents()
     if not documents:
         detail = " ".join(stats["warnings"]) or "No PDF or Hugging Face documents were loaded."
@@ -507,7 +503,6 @@ def build_vectorstore(
             "The knowledge base is empty, so there is nothing to index. " + detail
         )
 
-    vectorstore = _open_vectorstore(embeddings, client)
     _embed_documents(vectorstore, documents)
     stats["complete"] = True
     stats["chunk_count"] = len(documents)
@@ -519,17 +514,16 @@ def build_vectorstore(
 def load_knowledge_base() -> tuple[Chroma, dict]:
     """Reuse a finished index, or build one from both knowledge sources."""
     embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
-    client = _persistent_client()
     rebuild = REBUILD_FLAG.exists()
     if rebuild:
         REBUILD_FLAG.unlink()
 
     if _index_is_ready() and not rebuild:
         stats = _read_stats() or {}
-        return _open_vectorstore(embeddings, client), stats
+        return _open_vectorstore(embeddings), stats
 
     ensure_ollama_models()
-    return build_vectorstore(embeddings, client)
+    return build_vectorstore(embeddings)
 
 
 @st.cache_resource(show_spinner="Loading Whisper on CPU (int8)...")
@@ -624,17 +618,22 @@ def _context_from_docs(documents: list[Document]) -> str:
     return "\n\n".join(blocks)
 
 
-def retrieve_context(vectorstore: Chroma, symptoms: str) -> list[Document]:
-    """Embed the reviewed symptoms and search the merged local collection."""
-    return vectorstore.similarity_search(symptoms, k=RETRIEVAL_K)
+def retrieve_context(vectorstore: Chroma, symptoms: str, profile_text: str) -> list[Document]:
+    """Embed symptoms plus the health profile and search the local collection."""
+    query = f"{symptoms}\n\n{profile_text}"
+    return vectorstore.similarity_search(query, k=RETRIEVAL_K)
 
 
-def generate_answer(symptoms: str, retrieved: list[Document]) -> str:
-    """Pass retrieved chunks and the reviewed symptoms to MedGemma."""
+def generate_answer(symptoms: str, profile_text: str, retrieved: list[Document]) -> str:
+    """Pass retrieved chunks, the health profile, and the reviewed symptoms to MedGemma."""
     context = _context_from_docs(retrieved) or (
         "No relevant context was retrieved from the local knowledge base."
     )
-    prompt = CLINICAL_PROMPT.format(context=context, symptoms=symptoms)
+    prompt = CLINICAL_PROMPT.format(
+        context=context,
+        symptoms=symptoms,
+        profile=profile_text,
+    )
     llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
     raw = llm.invoke(prompt)
     if isinstance(raw, str):
@@ -659,6 +658,200 @@ def _plain_sources(documents: list[Document]) -> list[dict]:
     return plain
 
 
+def _shift_years(day: date, years: int) -> date:
+    """Move a date by whole years, including 29 February."""
+    try:
+        return day.replace(year=day.year + years)
+    except ValueError:
+        return day.replace(year=day.year + years, day=28)
+
+
+def _age_years(born: date, today: date | None = None) -> int:
+    today = today or date.today()
+    years = today.year - born.year
+    if (today.month, today.day) < (born.month, born.day):
+        years -= 1
+    return years
+
+
+def _empty_profile() -> dict:
+    return {
+        "date_of_birth": None,
+        "last_period_date": None,
+        "chronic_conditions": "",
+        "medications": "",
+    }
+
+
+def _valid_birth_date(born: date) -> bool:
+    today = date.today()
+    return _shift_years(today, -100) <= born <= _shift_years(today, -10)
+
+
+def _parse_saved_period(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed > date.today():
+        return None
+    return value
+
+
+def _read_profile_file() -> dict:
+    """Load the saved profile, including the last period date."""
+    profile = _empty_profile()
+    if not PROFILE_PATH.exists():
+        return profile
+    try:
+        payload = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return profile
+    if not isinstance(payload, dict):
+        return profile
+    birth = payload.get("date_of_birth")
+    if isinstance(birth, str) and birth:
+        try:
+            born = date.fromisoformat(birth)
+        except ValueError:
+            born = None
+        if born is not None and _valid_birth_date(born):
+            profile["date_of_birth"] = birth
+    profile["last_period_date"] = _parse_saved_period(payload.get("last_period_date"))
+    for key in ("chronic_conditions", "medications"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            profile[key] = value.strip()
+    return profile
+
+
+def _write_profile_file(profile: dict) -> None:
+    """Persist date of birth, last period, illnesses, and medicines."""
+    durable = {
+        "date_of_birth": profile.get("date_of_birth"),
+        "last_period_date": profile.get("last_period_date"),
+        "chronic_conditions": profile.get("chronic_conditions") or "",
+        "medications": profile.get("medications") or "",
+    }
+    PROFILE_PATH.write_text(json.dumps(durable, indent=2), encoding="utf-8")
+
+
+def _clinical_on_file(profile: dict) -> bool:
+    return bool(
+        profile.get("last_period_date")
+        or profile.get("chronic_conditions")
+        or profile.get("medications")
+    )
+
+
+def _load_profile_into_session() -> None:
+    """Seed the form once per visit and ask whether the saved details changed."""
+    if st.session_state.get("profile_ready"):
+        return
+    profile = _read_profile_file()
+    st.session_state.profile_on_file = profile
+    if profile["date_of_birth"]:
+        st.session_state.profile_birth_date = date.fromisoformat(profile["date_of_birth"])
+    else:
+        st.session_state.profile_birth_date = None
+    if profile["last_period_date"]:
+        st.session_state.profile_period_date = date.fromisoformat(profile["last_period_date"])
+    else:
+        st.session_state.profile_period_date = None
+    st.session_state.profile_conditions = profile["chronic_conditions"]
+    st.session_state.profile_medications = profile["medications"]
+    # A new visit starts from the saved profile. Editing opens only if they say yes,
+    # unless nothing clinical has been saved yet.
+    st.session_state.profile_update_choice = "Yes" if not _clinical_on_file(profile) else "No"
+    st.session_state.profile_ready = True
+
+
+def _birth_from_form() -> tuple[str | None, str | None]:
+    born = st.session_state.get("profile_birth_date")
+    if not isinstance(born, date):
+        return None, "Add a date of birth. Age is calculated from it."
+    if not _valid_birth_date(born):
+        return None, "Date of birth must correspond to an age from 10 to 100."
+    return born.isoformat(), None
+
+
+def _period_from_value(chosen: object) -> tuple[str | None, str | None]:
+    if not isinstance(chosen, date):
+        return None, "Enter the date of the last period."
+    if chosen > date.today():
+        return None, "The date of the last period cannot be in the future."
+    return chosen.isoformat(), None
+
+
+def _profile_from_form() -> tuple[dict, str | None, str | None]:
+    """Use the saved period, illnesses, and medicines unless this visit updates them."""
+    birth_iso, birth_error = _birth_from_form()
+    updating = st.session_state.get("profile_update_choice") == "Yes"
+    on_file = st.session_state.get("profile_on_file") or _empty_profile()
+    if updating:
+        period_iso, period_error = _period_from_value(st.session_state.get("profile_period_date"))
+        conditions = st.session_state.get("profile_conditions", "").strip()
+        medications = st.session_state.get("profile_medications", "").strip()
+    else:
+        period_iso = on_file.get("last_period_date")
+        period_error = None if period_iso else "The saved profile has no last period date. Choose Yes to add it."
+        conditions = (on_file.get("chronic_conditions") or "").strip()
+        medications = (on_file.get("medications") or "").strip()
+    profile = {
+        "date_of_birth": birth_iso,
+        "last_period_date": period_iso,
+        "chronic_conditions": conditions,
+        "medications": medications,
+        "updated_this_visit": updating,
+    }
+    return profile, birth_error, period_error
+
+
+def _profile_text(profile: dict) -> str:
+    """Turn the profile into the block sent to retrieval and MedGemma."""
+    birth = profile.get("date_of_birth")
+    if not birth:
+        age_lines = ["Date of birth: not provided", "Age: not provided"]
+    else:
+        born = date.fromisoformat(birth)
+        age_lines = [
+            f"Date of birth: {birth}",
+            f"Age: {_age_years(born)} years, calculated from the date of birth",
+        ]
+    last_period = profile.get("last_period_date")
+    if not last_period:
+        period_line = "Date of last period: not provided"
+    else:
+        period_day = date.fromisoformat(last_period)
+        days_ago = (date.today() - period_day).days
+        period_line = f"Date of last period: {last_period} ({days_ago} days ago)"
+    conditions = profile.get("chronic_conditions") or "none recorded"
+    medications = profile.get("medications") or "none recorded"
+    if profile.get("updated_this_visit"):
+        visit_line = "This visit: the user updated period, illnesses, or medications."
+    else:
+        visit_line = "This visit: the user kept the saved period, illnesses, and medications."
+    return "\n".join(
+        [
+            *age_lines,
+            period_line,
+            f"Illnesses: {conditions}",
+            f"Medications currently taken: {medications}",
+            visit_line,
+        ]
+    )
+
+
+def _period_summary(last_period: str | None) -> str:
+    if not last_period:
+        return "Not recorded"
+    period_day = date.fromisoformat(last_period)
+    days_ago = (date.today() - period_day).days
+    return f"{last_period} ({days_ago} days ago)"
+
+
 def _init_session_state() -> None:
     defaults = {
         "transcribed_text": "",
@@ -666,10 +859,12 @@ def _init_session_state() -> None:
         "audio_token": None,
         "transcription_error": None,
         "analysis": None,
+        "profile_notice": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    _load_profile_into_session()
 
 
 def _render_sidebar(stats: dict | None, kb_error: str | None) -> None:
@@ -731,6 +926,81 @@ def _render_sources(sources: list[dict]) -> None:
             suffix = f" ({', '.join(details)})" if details else ""
             st.markdown(f"**{index}. {label}** · `{kind}`{suffix}")
             st.text(source.get("content", ""))
+
+
+def _render_profile() -> tuple[dict, str | None, str | None]:
+    """Show the saved clinical details and ask whether they should be updated."""
+    if st.session_state.pop("profile_saved_collapse", False):
+        st.session_state.profile_update_choice = "No"
+    st.subheader("Health profile")
+    st.caption(
+        "Saved on this Mac in `patient_profile.json`. "
+        "Age is calculated from the date of birth, so that date does not need to be updated."
+    )
+    today = date.today()
+    st.date_input(
+        "Date of birth",
+        key="profile_birth_date",
+        min_value=_shift_years(today, -100),
+        max_value=_shift_years(today, -10),
+        help="Saved on this Mac. Age is calculated from this date.",
+    )
+    born = st.session_state.get("profile_birth_date")
+    if isinstance(born, date) and _valid_birth_date(born):
+        st.caption(f"Age: {_age_years(born)} years.")
+
+    on_file = st.session_state.get("profile_on_file") or _empty_profile()
+    st.markdown("**Period, illnesses, and medications on file**")
+    st.markdown(f"- Last period: {_period_summary(on_file.get('last_period_date'))}")
+    st.markdown(f"- Illnesses: {on_file.get('chronic_conditions') or 'None recorded'}")
+    st.markdown(f"- Medications: {on_file.get('medications') or 'None recorded'}")
+    st.radio(
+        "Do you want to update your data?",
+        ["No", "Yes"],
+        key="profile_update_choice",
+        horizontal=True,
+    )
+    if st.session_state.profile_update_choice == "Yes":
+        st.date_input(
+            "Date of the last period",
+            key="profile_period_date",
+            max_value=today,
+        )
+        chosen = st.session_state.get("profile_period_date")
+        if isinstance(chosen, date) and chosen <= today:
+            st.caption(f"Last period was {(today - chosen).days} days ago.")
+        st.text_area(
+            "Illnesses",
+            key="profile_conditions",
+            height=80,
+            placeholder="For example: migraine, hypothyroidism, PCOS",
+        )
+        st.text_area(
+            "Medications taken",
+            key="profile_medications",
+            height=80,
+            placeholder="Name and how you take each one, for example: levothyroxine daily",
+        )
+
+    profile, birth_error, period_error = _profile_from_form()
+    if st.button("Save profile", use_container_width=False):
+        if birth_error or (st.session_state.profile_update_choice == "Yes" and period_error):
+            st.session_state.profile_notice = None
+            st.error(birth_error or period_error)
+        else:
+            _write_profile_file(profile)
+            st.session_state.profile_on_file = {
+                "date_of_birth": profile.get("date_of_birth"),
+                "last_period_date": profile.get("last_period_date"),
+                "chronic_conditions": profile.get("chronic_conditions") or "",
+                "medications": profile.get("medications") or "",
+            }
+            st.session_state.profile_saved_collapse = True
+            st.session_state.profile_notice = "Profile saved on this Mac."
+            st.rerun()
+    if st.session_state.profile_notice and not birth_error:
+        st.success(st.session_state.profile_notice)
+    return profile, birth_error, period_error
 
 
 def _handle_audio() -> None:
@@ -798,6 +1068,8 @@ def main() -> None:
     intake, result = st.columns([1.05, 0.95], gap="large")
 
     with intake:
+        profile, birth_error, period_error = _render_profile()
+        st.divider()
         st.subheader("Describe symptoms")
         st.markdown(
             "Record a short description. The transcript is placed in the editor "
@@ -828,24 +1100,39 @@ def main() -> None:
         )
         if analyze:
             symptoms = edited_symptoms.strip()
-            if not symptoms:
+            if birth_error:
+                st.warning(birth_error)
+            elif period_error:
+                st.warning(period_error)
+            elif not symptoms:
                 st.warning("Enter or record symptoms before analysis.")
             elif vectorstore is None:
                 st.error(kb_error or "The local knowledge base is not ready.")
             else:
+                profile_text = _profile_text(profile)
+                _write_profile_file(profile)
+                st.session_state.profile_on_file = {
+                    "date_of_birth": profile.get("date_of_birth"),
+                    "last_period_date": profile.get("last_period_date"),
+                    "chronic_conditions": profile.get("chronic_conditions") or "",
+                    "medications": profile.get("medications") or "",
+                }
+                st.session_state.profile_notice = "Profile saved on this Mac."
                 with st.status("Running local retrieval...", expanded=True) as status:
                     try:
                         status.write(
-                            "Embedding the reviewed symptom text with nomic-embed-text "
-                            "and searching the local collection."
+                            "Embedding the reviewed symptoms and health profile, "
+                            "then searching the local collection."
                         )
-                        documents = retrieve_context(vectorstore, symptoms)
+                        documents = retrieve_context(vectorstore, symptoms, profile_text)
                         status.write(
                             f"Retrieved {len(documents)} chunks from PDFs and "
                             "Hugging Face QA data."
                         )
-                        status.write(f"Sending the context and symptoms to {LLM_MODEL}.")
-                        answer = generate_answer(symptoms, documents)
+                        status.write(
+                            f"Sending the profile, context, and symptoms to {LLM_MODEL}."
+                        )
+                        answer = generate_answer(symptoms, profile_text, documents)
                     except Exception as exc:
                         status.update(label="Analysis failed", state="error")
                         st.session_state.analysis = None
@@ -860,6 +1147,7 @@ def main() -> None:
                         status.update(label="Analysis complete", state="complete")
                         st.session_state.analysis = {
                             "symptoms": symptoms,
+                            "profile": profile_text,
                             "answer": answer,
                             "sources": _plain_sources(documents),
                         }
@@ -873,6 +1161,8 @@ def main() -> None:
                 "Retrieval does not run on the recording itself."
             )
         else:
+            st.markdown("**Health profile used**")
+            st.text(analysis.get("profile") or "No profile was stored with this analysis.")
             st.markdown("**Reviewed symptoms**")
             st.write(analysis["symptoms"])
             st.markdown("**MedGemma**")

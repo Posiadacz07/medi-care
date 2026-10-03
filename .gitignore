@@ -1,5 +1,6 @@
 chroma_db/
 ingestion_stats.json
+patient_profile.json
 .rebuild_requested
 __pycache__/
 .venv/

@@ -61,7 +61,7 @@ Hardware target: Apple Silicon Mac (tested against an M3 with 36 GB unified memo
 Python packages:
 
 ```bash
-pip install streamlit chromadb langchain langchain-community \
+pip install streamlit chromadb langchain langchain-community langchain-chroma \
     langchain-core langchain-text-splitters pypdf faster-whisper datasets
 ```
 
@@ -108,6 +108,7 @@ There is no text-to-speech. The answer is text only.
 
 ## Privacy
 
+- Date of birth, last period, illnesses, and medicines are saved only in `patient_profile.json` on this Mac. Age is calculated from the date of birth. Each visit shows the saved period, illnesses, and medicines and asks whether to update them. None of this is uploaded.
 - Microphone audio is written to a temporary file because faster-whisper needs a path, then the file is deleted.
 - The transcript is not sent anywhere until you click **Analyze Symptoms**, and then only to Ollama on `localhost`.
 - ChromaDB is an embedded database in `./chroma_db`. It is not a remote server.
