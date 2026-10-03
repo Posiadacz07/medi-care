@@ -1149,7 +1149,7 @@ APP_CSS = """
 
     #latest-answer {scroll-margin-top: 4.5rem;}
 
-    .mc-sources {margin-top: 1rem; padding-top: 0.85rem; border-top: 1px solid #F0E1E7;}
+    .mc-sources {margin: 1rem 0 1.25rem; padding-top: 0.85rem; border-top: 1px solid #F0E1E7;}
     .mc-sources-title {font-weight: 700; font-size: 0.92rem; color: #8E3A5E;}
     .mc-sources-intro {font-size: 0.85rem; color: #6B5A66; margin: 0.15rem 0 0.6rem;}
     .mc-chip-row {display: flex; flex-wrap: wrap; gap: 0.5rem;}
@@ -1161,6 +1161,11 @@ APP_CSS = """
     .mc-chip-name {font-size: 0.88rem; font-weight: 600; color: #2F2533;}
     .mc-chip-meta {font-size: 0.74rem; color: #A0517A;}
     .mc-chip-static .mc-chip-meta {color: #8A7A86;}
+
+    section[data-testid="stSidebar"][aria-expanded="true"] {
+        min-width: clamp(320px, 24vw, 460px);
+        max-width: clamp(320px, 24vw, 460px);
+    }
 
     .mc-side-title {font-size: 1.15rem; font-weight: 700; color: #2F2533; margin-bottom: 0.1rem;}
     .mc-profile {background: #FFFFFF; border: 1px solid #EBCFDA; border-radius: 16px;
