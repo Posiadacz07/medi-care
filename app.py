@@ -1430,11 +1430,20 @@ def _render_welcome(vectorstore: Chroma | None) -> None:
             else:
                 _reset_followup_state()
                 st.session_state.analysis_error = None
+                profile_text = _profile_text(_current_profile())
+                with st.spinner("Reading trusted sources and preparing your guidance..."):
+                    try:
+                        documents = retrieve_context(vectorstore, text, profile_text)
+                        answer = generate_answer(text, profile_text, documents)
+                    except Exception as exc:
+                        st.session_state.analysis_error = _ollama_failure_message(exc)
+                        st.rerun()
+                # Stored before the page refreshes, so a refresh cannot start a second reply.
                 st.session_state.analysis = {
                     "symptoms": text,
-                    "profile": _profile_text(_current_profile()),
-                    "answer": None,
-                    "sources": [],
+                    "profile": profile_text,
+                    "answer": answer,
+                    "sources": _plain_sources(documents),
                     "thread": [],
                 }
                 st.session_state.scroll_to_latest = True
@@ -1492,47 +1501,6 @@ def _render_assistant_turn(content: str, sources: list[dict], symptoms: str) -> 
         _render_learn_more(sources, content, symptoms)
 
 
-def _answer_first_question(analysis: dict, vectorstore: Chroma | None) -> None:
-    with st.chat_message("assistant"):
-        with st.spinner("Reading trusted sources and preparing your guidance..."):
-            try:
-                if vectorstore is None:
-                    raise RuntimeError("The health library isn't ready yet.")
-                documents = retrieve_context(vectorstore, analysis["symptoms"], analysis["profile"])
-                answer = generate_answer(analysis["symptoms"], analysis["profile"], documents)
-            except Exception as exc:
-                st.session_state.analysis = None
-                st.session_state.analysis_error = _ollama_failure_message(exc)
-                st.session_state.transcribed_text = analysis["symptoms"]
-                st.session_state.transcript_version += 1
-                st.rerun()
-    analysis["answer"] = answer
-    analysis["sources"] = _plain_sources(documents)
-    st.session_state.scroll_to_latest = True
-    st.rerun()
-
-
-def _answer_followup(analysis: dict, vectorstore: Chroma | None) -> None:
-    thread = analysis["thread"]
-    message = thread[-1]["content"]
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking about your follow-up..."):
-            try:
-                if vectorstore is None:
-                    raise RuntimeError("The health library isn't ready yet.")
-                earlier = {**analysis, "thread": thread[:-1]}
-                reply, documents = continue_conversation(vectorstore, earlier, message)
-            except Exception as exc:
-                thread.pop()
-                st.session_state.followup_error = _ollama_failure_message(exc)
-                st.session_state.followup_text = message
-                st.session_state.followup_draft_version += 1
-                st.rerun()
-    thread.append({"role": "assistant", "content": reply, "sources": _plain_sources(documents)})
-    st.session_state.scroll_to_latest = True
-    st.rerun()
-
-
 def _render_composer(analysis: dict, vectorstore: Chroma | None) -> None:
     """One follow-up box at the bottom of the thread, by voice or text."""
     version = st.session_state.followup_version
@@ -1565,7 +1533,23 @@ def _render_composer(analysis: dict, vectorstore: Chroma | None) -> None:
             if not message:
                 st.warning("Record or type a follow-up before sending it.")
                 return
+            if vectorstore is None:
+                st.error("The health library isn't ready yet.")
+                return
+            with st.spinner("Thinking about your follow-up..."):
+                try:
+                    reply, documents = continue_conversation(vectorstore, analysis, message)
+                except Exception as exc:
+                    st.session_state.followup_error = _ollama_failure_message(exc)
+                    st.rerun()
             analysis["thread"].append({"role": "user", "content": message})
+            analysis["thread"].append(
+                {
+                    "role": "assistant",
+                    "content": reply,
+                    "sources": _plain_sources(documents),
+                }
+            )
             st.session_state.followup_text = ""
             st.session_state.followup_draft_version += 1
             st.session_state.followup_error = None
@@ -1584,23 +1568,22 @@ def _render_conversation(analysis: dict, vectorstore: Chroma | None) -> None:
 
     thread = analysis.setdefault("thread", [])
     symptoms = analysis.get("symptoms", "")
-    messages = [{"role": "user", "content": symptoms}]
-    if analysis.get("answer") is not None:
-        messages.append(
-            {"role": "assistant", "content": analysis["answer"], "sources": analysis.get("sources") or []}
-        )
-    messages.extend(thread)
+    answer = analysis.get("answer")
+    if not answer:
+        st.session_state.analysis = None
+        st.rerun()
 
-    waiting_for_first = analysis.get("answer") is None
-    waiting_for_followup = bool(thread) and thread[-1].get("role") == "user"
-    pending = waiting_for_first or waiting_for_followup
+    messages = [
+        {"role": "user", "content": symptoms},
+        {"role": "assistant", "content": answer, "sources": analysis.get("sources") or []},
+        *thread,
+    ]
     last_assistant = max(
-        (index for index, message in enumerate(messages) if message.get("role") == "assistant"),
-        default=None,
+        index for index, message in enumerate(messages) if message.get("role") == "assistant"
     )
 
     for index, message in enumerate(messages):
-        if not pending and index == last_assistant:
+        if index == last_assistant:
             _latest_anchor()
         if message.get("role") == "assistant":
             _render_assistant_turn(message.get("content", ""), message.get("sources") or [], symptoms)
@@ -1608,18 +1591,9 @@ def _render_conversation(analysis: dict, vectorstore: Chroma | None) -> None:
             with st.chat_message("user"):
                 st.markdown(message.get("content", ""))
 
-    if pending:
-        _latest_anchor()
     if st.session_state.scroll_to_latest:
         st.session_state.scroll_to_latest = False
         _scroll_to_latest()
-
-    if waiting_for_first:
-        _answer_first_question(analysis, vectorstore)
-        return
-    if waiting_for_followup:
-        _answer_followup(analysis, vectorstore)
-        return
 
     _render_composer(analysis, vectorstore)
     st.markdown(
