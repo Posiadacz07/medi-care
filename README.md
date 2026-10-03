@@ -21,6 +21,7 @@ Patient audio is never sent to a cloud model. The only network use is the first 
 ```text
 medi-care/
 ├── app.py                                              # Streamlit app and RAG pipeline
+├── checked_sources.json                                # Checked web pages shown under each answer
 ├── requirements.txt                                    # Python dependencies
 ├── knowledge_base/
 │   └── sample_clinical_safety_guideline.pdf            # Local PDF source (replace with your guidelines)
@@ -102,8 +103,8 @@ On first launch the app downloads the three Hugging Face sources (up to the row 
 2. Wait for the local transcript.
 3. Edit the text in **Review and edit your symptoms**.
 4. Click **Analyze Symptoms**. Retrieval starts only on that click.
-5. Read the MedGemma answer. Open **Retrieved source chunks** to see the exact ChromaDB passages used.
-6. Answer **Does this answer address your concern?** If you want a change, record or type one follow-up. You can mention options to avoid or what a doctor already covered. Edit the transcript, then click **Continue conversation**. The full answer is sent with that message.
+5. Read the MedGemma answer. **Sources** lists checked web pages from `checked_sources.json` that match the answer. Open **Retrieved source chunks** to see the exact ChromaDB passages used.
+6. To continue, record or type one follow-up. You can mention options to avoid or what a doctor already covered. Edit the transcript, then click **Continue conversation**. Stop when the answer is enough. Each reply again shows matching checked pages.
 
 There is no text-to-speech. The answer is text only.
 

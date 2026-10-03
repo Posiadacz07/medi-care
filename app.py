@@ -61,6 +61,8 @@ KNOWLEDGE_BASE_DIR = Path("./knowledge_base")
 PERSIST_DIR = Path("./chroma_db")
 STATS_PATH = Path("./ingestion_stats.json")
 PROFILE_PATH = Path("./patient_profile.json")
+CHECKED_SOURCES_PATH = Path(__file__).resolve().parent / "checked_sources.json"
+MAX_CHECKED_SOURCES = 4
 REBUILD_FLAG = Path("./.rebuild_requested")
 COLLECTION_NAME = "medi_care_knowledge"
 
@@ -137,7 +139,6 @@ FOLLOWUP_PROMPT = PromptTemplate(
         "complete_answers",
         "earlier_followups",
         "followup",
-        "satisfied",
     ],
     template=(
         "You are MediCare Local, continuing a conversation on this device. "
@@ -159,13 +160,13 @@ FOLLOWUP_PROMPT = PromptTemplate(
         "worsening allergic reaction, or thoughts of self-harm), tell the "
         "person to contact emergency services now.\n\n"
         "Write a short conversational reply that revises the full answer in light "
-        "of the follow-up. End by asking whether this now addresses the concern.\n\n"
+        "of the follow-up. Stop when the reply is complete. Do not ask whether "
+        "the user is satisfied.\n\n"
         "Health profile:\n{profile}\n\n"
         "Reviewed symptoms:\n{symptoms}\n\n"
         "Retrieved context:\n{context}\n\n"
         "Complete answers already given:\n{complete_answers}\n\n"
         "Earlier follow-ups from the user:\n{earlier_followups}\n\n"
-        "User says the latest answer addresses the concern: {satisfied}\n\n"
         "This follow-up:\n{followup}\n\n"
         "Response:"
     ),
@@ -712,11 +713,82 @@ def _earlier_followups(thread: list[dict]) -> str:
     return "\n\n".join(messages) or "None yet."
 
 
+def _load_checked_sources() -> list[dict]:
+    """Checked web pages shipped with the app. The model cannot add its own links."""
+    try:
+        payload = json.loads(CHECKED_SOURCES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    sources = []
+    if not isinstance(payload, list):
+        return sources
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not url.startswith("https://") or not title:
+            continue
+        keywords = item.get("keywords") or []
+        if not isinstance(keywords, list):
+            keywords = []
+        sources.append(
+            {
+                "title": title,
+                "publisher": str(item.get("publisher") or "Checked page").strip(),
+                "url": url,
+                "keywords": [str(keyword).lower() for keyword in keywords if str(keyword).strip()],
+                "fallback": bool(item.get("fallback")),
+            }
+        )
+    return sources
+
+
+CHECKED_SOURCES = _load_checked_sources()
+
+
+def _match_checked_sources(*texts: str) -> list[dict]:
+    """Pick checked pages whose topics appear in the answer or symptoms."""
+    haystack = " ".join(text.lower() for text in texts if text)
+    scored: list[tuple[int, dict]] = []
+    for source in CHECKED_SOURCES:
+        score = sum(1 for keyword in source["keywords"] if keyword and keyword in haystack)
+        if score:
+            scored.append((score, source))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    chosen = [source for _, source in scored[:MAX_CHECKED_SOURCES]]
+    if chosen:
+        return chosen
+    return [source for source in CHECKED_SOURCES if source.get("fallback")][:MAX_CHECKED_SOURCES]
+
+
+def _render_checked_sources(*texts: str) -> None:
+    """Show matched checked pages as source chips under an answer."""
+    pages = _match_checked_sources(*texts)
+    if not pages:
+        return
+    chips = []
+    for page in pages:
+        chips.append(
+            '<a class="source-chip" href="{url}" target="_blank" rel="noopener noreferrer">'
+            "{publisher} · {title}</a>".format(
+                url=page["url"],
+                publisher=page["publisher"],
+                title=page["title"],
+            )
+        )
+    st.markdown("**Sources**")
+    st.markdown(
+        '<div class="source-row">' + "".join(chips) + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Checked pages included with this app.")
+
+
 def continue_conversation(
     vectorstore: Chroma,
     analysis: dict,
     followup: str,
-    satisfied: str,
 ) -> tuple[str, list[Document]]:
     """Retrieve again and reply using the full answers plus this follow-up."""
     query = "\n\n".join(
@@ -735,7 +807,6 @@ def continue_conversation(
         complete_answers=_complete_answers(analysis),
         earlier_followups=_earlier_followups(analysis.get("thread") or []),
         followup=followup,
-        satisfied=satisfied,
     )
     return _invoke_medgemma(prompt), retrieved
 
@@ -1130,18 +1201,17 @@ def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
             role = "user" if turn.get("role") == "user" else "assistant"
             with st.chat_message(role):
                 st.markdown(turn.get("content", ""))
+                if role == "assistant":
+                    _render_checked_sources(
+                        turn.get("content", ""),
+                        analysis.get("symptoms", ""),
+                    )
                 sources = turn.get("sources") or []
                 if sources:
-                    with st.expander(f"Sources for reply {index // 2 + 1}"):
+                    with st.expander(f"Retrieved passages for reply {index // 2 + 1}"):
                         _render_source_list(sources)
 
     st.subheader("Follow-up")
-    satisfied = st.radio(
-        "Does this answer address your concern?",
-        ["Not yet", "Yes"],
-        key=f"concern_{version}_{len(thread)}",
-        horizontal=True,
-    )
     st.caption(
         "Record or type one message. You can say what you want to avoid, "
         "what you already discussed with a doctor, or what still does not fit. "
@@ -1171,7 +1241,6 @@ def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
                     vectorstore,
                     analysis,
                     message,
-                    satisfied,
                 )
             except Exception as exc:
                 st.error(_ollama_failure_message(exc))
@@ -1240,6 +1309,15 @@ def main() -> None:
         """
         <style>
             .block-container {padding-top: 1.4rem; max-width: 1120px;}
+            .source-row {display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.25rem 0 0.4rem;}
+            .source-chip {
+                display: inline-block;
+                padding: 0.35rem 0.75rem;
+                border: 1px solid rgba(49, 51, 63, 0.2);
+                border-radius: 999px;
+                text-decoration: none;
+                font-size: 0.9rem;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1371,6 +1449,11 @@ def main() -> None:
             st.write(analysis["symptoms"])
             st.markdown("**MedGemma**")
             st.markdown(analysis["answer"])
+            _render_checked_sources(
+                analysis["answer"],
+                analysis.get("symptoms", ""),
+                analysis.get("profile", ""),
+            )
             _render_sources(analysis["sources"])
             _render_followup(analysis, vectorstore)
             st.caption(

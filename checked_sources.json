@@ -1,0 +1,93 @@
+[
+  {
+    "title": "Periods",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/periods/",
+    "keywords": ["period", "menstrual", "menstruation", "cycle", "bleeding"]
+  },
+  {
+    "title": "Period pain",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/period-pain/",
+    "keywords": ["cramp", "period pain", "dysmenorrhea", "painful period"]
+  },
+  {
+    "title": "Heavy periods",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/heavy-periods/",
+    "keywords": ["heavy period", "heavy bleeding", "menorrhagia", "flooding", "clots"]
+  },
+  {
+    "title": "Irregular periods",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/irregular-periods/",
+    "keywords": ["irregular", "missed period", "late period", "unpredictable"]
+  },
+  {
+    "title": "PMS",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/pre-menstrual-syndrome/",
+    "keywords": ["pms", "pmdd", "premenstrual", "pre-menstrual"]
+  },
+  {
+    "title": "PCOS",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/polycystic-ovary-syndrome-pcos/",
+    "keywords": ["pcos", "polycystic"]
+  },
+  {
+    "title": "Endometriosis",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/endometriosis/",
+    "keywords": ["endometriosis"]
+  },
+  {
+    "title": "Menopause",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/menopause/",
+    "keywords": ["menopause", "perimenopause", "hot flush", "hot flash"]
+  },
+  {
+    "title": "Iron deficiency anaemia",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/conditions/iron-deficiency-anaemia/",
+    "keywords": ["anaemia", "anemia", "iron", "ferritin", "tired", "fatigue"]
+  },
+  {
+    "title": "Eat well",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/live-well/eat-well/",
+    "keywords": ["diet", "nutrition", "food", "eat", "protein", "supplement"]
+  },
+  {
+    "title": "Your menstrual cycle",
+    "publisher": "Office on Women's Health",
+    "url": "https://www.womenshealth.gov/menstrual-cycle/your-menstrual-cycle",
+    "keywords": ["cycle", "ovulation", "menstrual", "period"]
+  },
+  {
+    "title": "Polycystic ovary syndrome",
+    "publisher": "Office on Women's Health",
+    "url": "https://www.womenshealth.gov/a-z-topics/polycystic-ovary-syndrome",
+    "keywords": ["pcos", "polycystic"]
+  },
+  {
+    "title": "Abnormal uterine bleeding",
+    "publisher": "ACOG",
+    "url": "https://www.acog.org/womens-health/faqs/abnormal-uterine-bleeding",
+    "keywords": ["bleeding", "heavy period", "spotting", "abnormal"]
+  },
+  {
+    "title": "Menstruation",
+    "publisher": "MedlinePlus",
+    "url": "https://medlineplus.gov/menstruation.html",
+    "keywords": ["menstrual", "menstruation", "period"]
+  },
+  {
+    "title": "When to use 111",
+    "publisher": "NHS",
+    "url": "https://www.nhs.uk/nhs-services/urgent-and-emergency-care-services/when-to-use-111/",
+    "keywords": ["emergency", "111", "urgent", "chest pain", "fainting", "severe bleeding", "trouble breathing"],
+    "fallback": true
+  }
+]
