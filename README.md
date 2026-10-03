@@ -95,22 +95,26 @@ streamlit run app.py
 
 If the Ollama app is already open, you can skip `ollama serve`.
 
-On first launch the app downloads the three Hugging Face sources (up to the row cap), embeds them with `nomic-embed-text`, and writes `./chroma_db`. Later launches reuse that index. Use **Rebuild knowledge base** in the sidebar after you add PDFs or change the row cap.
+On first launch the app downloads the three Hugging Face sources (up to the row cap), embeds them with `nomic-embed-text`, and writes `./chroma_db`. Later launches reuse that index. After you add PDFs or change the row cap, open **App maintenance** at the bottom of the sidebar and click **Refresh health library**.
 
 ### Using the app
 
-1. Choose **Record your symptoms** and speak in English.
-2. Wait for the local transcript.
-3. Edit the text in **Review and edit your symptoms**.
-4. Click **Analyze Symptoms**. Retrieval starts only on that click.
-5. Read the MedGemma answer. **Sources** lists checked web pages from `checked_sources.json` that match the answer. Open **Retrieved source chunks** to see the exact ChromaDB passages used.
-6. To continue, record or type one follow-up. You can mention options to avoid or what a doctor already covered. Edit the transcript, then click **Continue conversation**. Stop when the answer is enough. Each reply again shows matching checked pages.
+The sidebar holds the health profile: age (from date of birth), first day of the last period, health conditions, and medications. Click **Update my profile** to change them. On a first visit the editor opens automatically.
+
+1. On the welcome screen, tap the microphone and speak in English.
+2. Check the transcript in **Check what I heard, or type instead**, or type directly.
+3. Click **Get guidance**. Retrieval starts only on that click.
+4. The conversation opens as a chat. Each reply ends with **Want to learn more?**: source chips linking to checked web pages from `checked_sources.json` and to the knowledge-base documents used for that reply.
+5. To continue, speak or type in **Anything else you'd like to ask?** and click **Send**. The page scrolls to the start of the newest reply.
+6. **New conversation** clears the thread and returns to the welcome screen.
+
+The color theme lives in `.streamlit/config.toml`.
 
 There is no text-to-speech. The answer is text only.
 
 ## Privacy
 
-- Date of birth, last period, illnesses, and medicines are saved only in `patient_profile.json` on this Mac. Age is calculated from the date of birth. Each visit shows the saved period, illnesses, and medicines and asks whether to update them. None of this is uploaded.
+- Date of birth, last period, illnesses, and medicines are saved only in `patient_profile.json` on this Mac. Age is calculated from the date of birth. The sidebar shows the saved profile on every visit and invites the person to update it. None of this is uploaded.
 - Microphone audio is written to a temporary file because faster-whisper needs a path, then the file is deleted.
 - The transcript and any follow-up conversation are sent only to Ollama on `localhost`. Follow-up turns stay in the browser session and are not written to disk.
 - ChromaDB is an embedded database in `./chroma_db`. It is not a remote server.

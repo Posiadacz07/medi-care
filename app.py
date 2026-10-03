@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -28,8 +29,10 @@ import urllib.request
 from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 
 import streamlit as st
+import streamlit.components.v1 as components
 from chromadb.config import Settings
 from datasets import load_dataset
 # from datasets.utils.logging import disable_progress_bars
@@ -97,6 +100,7 @@ HF_SOURCES = (
         "description": "Sample of patient health-advice QA",
     },
 )
+HF_DESCRIPTIONS = {spec["repo"]: spec["description"] for spec in HF_SOURCES}
 
 CLINICAL_PROMPT = PromptTemplate(
     input_variables=["context", "symptoms", "profile"],
@@ -553,7 +557,7 @@ def build_vectorstore(embeddings: OllamaEmbeddings) -> tuple[Chroma, dict]:
     return vectorstore, stats
 
 
-@st.cache_resource(show_spinner="Preparing the local ChromaDB knowledge base...")
+@st.cache_resource(show_spinner="Getting your private health library ready...")
 def load_knowledge_base() -> tuple[Chroma, dict]:
     """Reuse a finished index, or build one from both knowledge sources."""
     embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
@@ -569,7 +573,7 @@ def load_knowledge_base() -> tuple[Chroma, dict]:
     return build_vectorstore(embeddings)
 
 
-@st.cache_resource(show_spinner="Loading Whisper on CPU (int8)...")
+@st.cache_resource(show_spinner="Preparing voice recognition...")
 def load_whisper_model() -> WhisperModel:
     # Apple Silicon has no CUDA. int8 on CPU is the supported configuration.
     return WhisperModel(
@@ -762,27 +766,73 @@ def _match_checked_sources(*texts: str) -> list[dict]:
     return [source for source in CHECKED_SOURCES if source.get("fallback")][:MAX_CHECKED_SOURCES]
 
 
-def _render_checked_sources(*texts: str) -> None:
-    """Show matched checked pages as source chips under an answer."""
-    pages = _match_checked_sources(*texts)
-    if not pages:
-        return
-    chips = []
-    for page in pages:
-        chips.append(
-            '<a class="source-chip" href="{url}" target="_blank" rel="noopener noreferrer">'
-            "{publisher} · {title}</a>".format(
-                url=page["url"],
-                publisher=page["publisher"],
-                title=page["title"],
+def _domain(url: str) -> str:
+    host = urlparse(url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _library_chips(sources: list[dict]) -> list[dict]:
+    """One chip per knowledge-base document behind an answer, without duplicates."""
+    chips: list[dict] = []
+    seen: set[str] = set()
+    for source in sources or []:
+        metadata = source.get("metadata") or {}
+        name = str(metadata.get("source") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        if metadata.get("source_type") == "huggingface_qa":
+            url = f"https://huggingface.co/datasets/{name}"
+            chips.append(
+                {"name": HF_DESCRIPTIONS.get(name, name), "meta": _domain(url), "url": url}
             )
+        else:
+            label = Path(name).stem.replace("_", " ").replace("-", " ").strip()
+            chips.append(
+                {
+                    "name": label[:1].upper() + label[1:] if label else name,
+                    "meta": "Clinical guideline on this device",
+                    "url": None,
+                }
+            )
+    return chips
+
+
+def _chip_html(chip: dict) -> str:
+    name = html.escape(chip["name"])
+    meta = html.escape(chip["meta"])
+    if chip.get("url"):
+        return (
+            f'<a class="mc-chip" href="{html.escape(chip["url"], quote=True)}" '
+            'target="_blank" rel="noopener noreferrer">'
+            f'<span class="mc-chip-name">{name}</span>'
+            f'<span class="mc-chip-meta">{meta} ↗</span></a>'
         )
-    st.markdown("**Sources**")
+    return (
+        '<span class="mc-chip mc-chip-static">'
+        f'<span class="mc-chip-name">{name}</span>'
+        f'<span class="mc-chip-meta">{meta}</span></span>'
+    )
+
+
+def _render_learn_more(sources: list[dict], *texts: str) -> None:
+    """Checked web pages and knowledge-base documents, shown as chips under a reply."""
+    chips = [
+        {"name": page["title"], "meta": f'{page["publisher"]} · {_domain(page["url"])}', "url": page["url"]}
+        for page in _match_checked_sources(*texts)
+    ]
+    chips.extend(_library_chips(sources))
+    if not chips:
+        return
     st.markdown(
-        '<div class="source-row">' + "".join(chips) + "</div>",
+        '<div class="mc-sources">'
+        '<div class="mc-sources-title">Want to learn more?</div>'
+        '<div class="mc-sources-intro">You may want to check these sources to learn more '
+        "about the conditions we discussed.</div>"
+        '<div class="mc-chip-row">' + "".join(_chip_html(chip) for chip in chips) + "</div>"
+        "</div>",
         unsafe_allow_html=True,
     )
-    # st.caption("Checked pages included with this app.")
 
 
 def continue_conversation(
@@ -904,75 +954,12 @@ def _write_profile_file(profile: dict) -> None:
     PROFILE_PATH.write_text(json.dumps(durable, indent=2), encoding="utf-8")
 
 
-def _clinical_on_file(profile: dict) -> bool:
-    return bool(
-        profile.get("last_period_date")
-        or profile.get("chronic_conditions")
-        or profile.get("medications")
-    )
-
-
-def _load_profile_into_session() -> None:
-    """Seed the form once per visit and ask whether the saved details changed."""
-    if st.session_state.get("profile_ready"):
-        return
-    profile = _read_profile_file()
-    st.session_state.profile_on_file = profile
-    if profile["date_of_birth"]:
-        st.session_state.profile_birth_date = date.fromisoformat(profile["date_of_birth"])
-    else:
-        st.session_state.profile_birth_date = None
-    if profile["last_period_date"]:
-        st.session_state.profile_period_date = date.fromisoformat(profile["last_period_date"])
-    else:
-        st.session_state.profile_period_date = None
-    st.session_state.profile_conditions = profile["chronic_conditions"]
-    st.session_state.profile_medications = profile["medications"]
-    # A new visit starts from the saved profile. Editing opens only if they say yes,
-    # unless nothing clinical has been saved yet.
-    st.session_state.profile_update_choice = "Yes" if not _clinical_on_file(profile) else "No"
-    st.session_state.profile_ready = True
-
-
-def _birth_from_form() -> tuple[str | None, str | None]:
-    born = st.session_state.get("profile_birth_date")
-    if not isinstance(born, date):
-        return None, "Add a date of birth. Age is calculated from it."
-    if not _valid_birth_date(born):
-        return None, "Date of birth must correspond to an age from 10 to 100."
-    return born.isoformat(), None
-
-
-def _period_from_value(chosen: object) -> tuple[str | None, str | None]:
-    if not isinstance(chosen, date):
-        return None, "Enter the date of the last period."
-    if chosen > date.today():
-        return None, "The date of the last period cannot be in the future."
-    return chosen.isoformat(), None
-
-
-def _profile_from_form() -> tuple[dict, str | None, str | None]:
-    """Use the saved period, illnesses, and medicines unless this visit updates them."""
-    birth_iso, birth_error = _birth_from_form()
-    updating = st.session_state.get("profile_update_choice") == "Yes"
-    on_file = st.session_state.get("profile_on_file") or _empty_profile()
-    if updating:
-        period_iso, period_error = _period_from_value(st.session_state.get("profile_period_date"))
-        conditions = st.session_state.get("profile_conditions", "").strip()
-        medications = st.session_state.get("profile_medications", "").strip()
-    else:
-        period_iso = on_file.get("last_period_date")
-        period_error = None if period_iso else "The saved profile has no last period date. Choose Yes to add it."
-        conditions = (on_file.get("chronic_conditions") or "").strip()
-        medications = (on_file.get("medications") or "").strip()
-    profile = {
-        "date_of_birth": birth_iso,
-        "last_period_date": period_iso,
-        "chronic_conditions": conditions,
-        "medications": medications,
-        "updated_this_visit": updating,
-    }
-    return profile, birth_error, period_error
+def _profile_problem(profile: dict) -> str | None:
+    if not profile.get("date_of_birth"):
+        return "Add your date of birth in your profile so guidance can match your age."
+    if not profile.get("last_period_date"):
+        return "Add the first day of your last period in your profile."
+    return None
 
 
 def _profile_text(profile: dict) -> str:
@@ -1010,27 +997,111 @@ def _profile_text(profile: dict) -> str:
     )
 
 
+def _current_profile() -> dict:
+    on_file = st.session_state.get("profile_on_file") or _empty_profile()
+    return {**on_file, "updated_this_visit": st.session_state.get("profile_updated_this_visit", False)}
+
+
 def _period_summary(last_period: str | None) -> str:
     if not last_period:
-        return "Not recorded"
+        return "Not added yet"
     period_day = date.fromisoformat(last_period)
     days_ago = (date.today() - period_day).days
-    return f"{last_period} ({days_ago} days ago)"
+    if days_ago == 0:
+        ago = "today"
+    elif days_ago == 1:
+        ago = "yesterday"
+    else:
+        ago = f"{days_ago} days ago"
+    return f"{period_day.strftime('%d %b %Y')} · {ago}"
+
+
+def _seed_profile_form() -> None:
+    on_file = st.session_state.get("profile_on_file") or _empty_profile()
+    birth = on_file.get("date_of_birth")
+    period = on_file.get("last_period_date")
+    st.session_state.profile_birth_date = date.fromisoformat(birth) if birth else None
+    st.session_state.profile_period_date = date.fromisoformat(period) if period else None
+    st.session_state.profile_conditions = on_file.get("chronic_conditions") or ""
+    st.session_state.profile_medications = on_file.get("medications") or ""
+
+
+def _open_profile_editor() -> None:
+    _seed_profile_form()
+    st.session_state.profile_error = None
+    st.session_state.profile_editing = True
+
+
+def _close_profile_editor() -> None:
+    st.session_state.profile_error = None
+    st.session_state.profile_editing = False
+
+
+def _save_profile_form() -> None:
+    born = st.session_state.get("profile_birth_date")
+    period = st.session_state.get("profile_period_date")
+    if not isinstance(born, date):
+        error = "Add your date of birth. We use it to work out your age."
+    elif not _valid_birth_date(born):
+        error = "Date of birth must correspond to an age from 10 to 100."
+    elif not isinstance(period, date):
+        error = "Add the first day of your last period."
+    elif period > date.today():
+        error = "The date of your last period can't be in the future."
+    else:
+        error = None
+    if error:
+        st.session_state.profile_error = error
+        return
+    profile = {
+        "date_of_birth": born.isoformat(),
+        "last_period_date": period.isoformat(),
+        "chronic_conditions": st.session_state.get("profile_conditions", "").strip(),
+        "medications": st.session_state.get("profile_medications", "").strip(),
+    }
+    _write_profile_file(profile)
+    st.session_state.profile_on_file = profile
+    st.session_state.profile_updated_this_visit = True
+    st.session_state.profile_editing = False
+    st.session_state.profile_error = None
+    st.session_state.profile_notice = "Profile saved."
+    analysis = st.session_state.get("analysis")
+    if analysis:
+        analysis["profile"] = _profile_text(_current_profile())
+
+
+def _load_profile_into_session() -> None:
+    """Load the saved profile once per visit; open the editor if it is incomplete."""
+    if st.session_state.get("profile_ready"):
+        return
+    profile = _read_profile_file()
+    st.session_state.profile_on_file = profile
+    st.session_state.profile_updated_this_visit = False
+    st.session_state.profile_editing = _profile_problem(profile) is not None
+    if st.session_state.profile_editing:
+        _seed_profile_form()
+    st.session_state.profile_ready = True
 
 
 def _init_session_state() -> None:
     defaults = {
         "transcribed_text": "",
         "transcript_version": 0,
+        "intake_version": 0,
         "audio_token": None,
         "transcription_error": None,
         "analysis": None,
+        "analysis_error": None,
         "profile_notice": None,
+        "profile_error": None,
         "followup_version": 0,
         "followup_text": "",
         "followup_draft_version": 0,
         "followup_audio_token": None,
         "followup_transcription_error": None,
+        "followup_error": None,
+        "scroll_to_latest": False,
+        "scroll_nonce": 0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1038,127 +1109,193 @@ def _init_session_state() -> None:
     _load_profile_into_session()
 
 
-def _render_sidebar(stats: dict | None, kb_error: str | None) -> None:
-    st.sidebar.header("On this Mac")
-    st.sidebar.caption(
-        "Audio and transcripts are not uploaded. "
-        "Retrieval uses a local ChromaDB collection."
-    )
-    st.sidebar.markdown(f"**LLM:** `{LLM_MODEL}`")
-    st.sidebar.markdown(f"**Embeddings:** `{EMBED_MODEL}`")
-    st.sidebar.markdown(
-        f"**Speech-to-text:** faster-whisper `{WHISPER_MODEL_SIZE}` "
-        f"({WHISPER_DEVICE}, {WHISPER_COMPUTE_TYPE})"
-    )
-    if kb_error:
-        st.sidebar.error(kb_error)
-    if stats:
-        st.sidebar.metric("Indexed chunks", int(stats.get("chunk_count", 0)))
-        st.sidebar.metric("PDF chunks", int(stats.get("pdf_chunks", 0)))
-        st.sidebar.metric("QA documents", int(stats.get("qa_documents", 0)))
-        sources = stats.get("sources") or {}
-        if sources:
-            st.sidebar.markdown("**Hugging Face rows indexed**")
-            for repo, count in sources.items():
-                st.sidebar.markdown(f"- `{repo}`: {count}")
-        for warning in stats.get("warnings") or []:
-            st.sidebar.warning(warning)
-    st.sidebar.divider()
-    st.sidebar.caption(
-        "Rebuild after you add PDFs or change MAX_ROWS_PER_HF_SOURCE. "
-        "Rebuilding re-embeds every chunk locally."
-    )
-    if st.sidebar.button("Rebuild knowledge base", use_container_width=True):
-        REBUILD_FLAG.write_text("rebuild", encoding="utf-8")
-        if STATS_PATH.exists():
-            STATS_PATH.unlink()
-        st.cache_resource.clear()
-        st.rerun()
+APP_CSS = """
+<style>
+    .block-container {padding-top: 3.5rem; padding-bottom: 3rem; max-width: 900px;}
+
+    .mc-brand {display: flex; align-items: center; justify-content: space-between;
+        gap: 1rem; margin-bottom: 0.5rem;}
+    .mc-brand-name {font-size: 1.15rem; font-weight: 700; color: #8E3A5E; letter-spacing: 0.01em;}
+    .mc-brand-name span {color: #2F2533; font-weight: 500;}
+    .mc-badge {font-size: 0.78rem; color: #6B5A66; background: #F7ECEF;
+        border-radius: 999px; padding: 0.25rem 0.7rem; white-space: nowrap;}
+
+    .mc-hero {text-align: center; margin: 2.5rem auto 1.5rem; max-width: 620px;}
+    .mc-hero h1 {font-size: 2.3rem; line-height: 1.2; margin-bottom: 0.6rem; color: #2F2533;}
+    .mc-hero p {font-size: 1.05rem; color: #6B5A66; margin: 0;}
+    .mc-mic-hint {text-align: center; color: #8E3A5E; font-weight: 600;
+        font-size: 0.95rem; margin: 0.5rem 0 0.35rem;}
+    .mc-topics {display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4rem;
+        margin: 1.4rem 0 0.4rem;}
+    .mc-topic {font-size: 0.82rem; color: #6B5A66; background: #FFFFFF;
+        border: 1px dashed #E3C9D3; border-radius: 999px; padding: 0.25rem 0.7rem;}
+    .mc-fineprint {text-align: center; font-size: 0.8rem; color: #8A7A86; margin-top: 1rem;}
+
+    [data-testid="stChatMessage"] {background: #FFFFFF; border: 1px solid #F0E1E7;
+        border-radius: 18px; padding: 1rem 1.1rem; margin-bottom: 0.75rem;}
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        background: #F7ECEF; border-color: #F7ECEF; margin-left: auto; max-width: 85%;}
+    [data-testid="stChatMessageAvatarUser"] {background-color: #D98BA8; color: #FFFFFF;}
+    [data-testid="stChatMessageAvatarAssistant"] {background-color: #8E3A5E; color: #FFFFFF;}
+
+    #latest-answer {scroll-margin-top: 4.5rem;}
+
+    .mc-sources {margin-top: 1rem; padding-top: 0.85rem; border-top: 1px solid #F0E1E7;}
+    .mc-sources-title {font-weight: 700; font-size: 0.92rem; color: #8E3A5E;}
+    .mc-sources-intro {font-size: 0.85rem; color: #6B5A66; margin: 0.15rem 0 0.6rem;}
+    .mc-chip-row {display: flex; flex-wrap: wrap; gap: 0.5rem;}
+    .mc-chip {display: inline-flex; flex-direction: column; gap: 0.05rem;
+        padding: 0.45rem 0.9rem; border-radius: 16px; background: #FFF6F8;
+        border: 1px solid #EBCFDA; text-decoration: none !important;
+        transition: background 0.15s ease, border-color 0.15s ease;}
+    a.mc-chip:hover {background: #F7E3EA; border-color: #D9A7BB;}
+    .mc-chip-name {font-size: 0.88rem; font-weight: 600; color: #2F2533;}
+    .mc-chip-meta {font-size: 0.74rem; color: #A0517A;}
+    .mc-chip-static .mc-chip-meta {color: #8A7A86;}
+
+    .mc-side-title {font-size: 1.15rem; font-weight: 700; color: #2F2533; margin-bottom: 0.1rem;}
+    .mc-profile {background: #FFFFFF; border: 1px solid #EBCFDA; border-radius: 16px;
+        padding: 0.4rem 0.9rem; margin: 0.6rem 0 0.8rem;}
+    .mc-profile-row {padding: 0.55rem 0; border-bottom: 1px solid #F5E8ED;}
+    .mc-profile-row:last-child {border-bottom: none;}
+    .mc-profile-label {font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+        color: #8A7A86;}
+    .mc-profile-value {font-size: 0.95rem; color: #2F2533; margin-top: 0.1rem;
+        overflow-wrap: anywhere;}
+    .mc-profile-empty {color: #A89AA4; font-style: italic;}
+    .mc-emergency {font-size: 0.8rem; color: #6B5A66; background: #FFF1F1;
+        border-left: 3px solid #D9534F; border-radius: 8px; padding: 0.6rem 0.75rem;}
+
+    div[data-testid="stElementContainer"]:has(iframe[height="0"]),
+    div.element-container:has(iframe[height="0"]) {display: none;}
+</style>
+"""
 
 
-def _render_sources(sources: list[dict]) -> None:
-    # with st.expander("Retrieved source chunks", expanded=False):
-    #     st.caption(
-    #         "Exact chunks returned by similarity search over the single "
-    #         "local collection (PDF guidelines and Hugging Face QA)."
-    #     )
-        # _render_source_list(sources)
-    print("sources")
+def _request_rebuild() -> None:
+    REBUILD_FLAG.write_text("rebuild", encoding="utf-8")
+    if STATS_PATH.exists():
+        STATS_PATH.unlink()
+    st.cache_resource.clear()
 
 
-def _render_profile() -> tuple[dict, str | None, str | None]:
-    """Show the saved clinical details and ask whether they should be updated."""
-    if st.session_state.pop("profile_saved_collapse", False):
-        st.session_state.profile_update_choice = "No"
-    st.subheader("Health profile")
-    st.caption(
-        "Saved on this Mac in `patient_profile.json`. "
-        "Age is calculated from the date of birth, so that date does not need to be updated."
-    )
-    today = date.today()
-    st.date_input(
-        "Date of birth",
-        key="profile_birth_date",
-        min_value=_shift_years(today, -100),
-        max_value=_shift_years(today, -10),
-        help="Saved on this Mac. Age is calculated from this date.",
-    )
-    born = st.session_state.get("profile_birth_date")
-    if isinstance(born, date) and _valid_birth_date(born):
-        st.caption(f"Age: {_age_years(born)} years.")
-
+def _render_profile_summary() -> None:
     on_file = st.session_state.get("profile_on_file") or _empty_profile()
-    st.markdown("**Period, illnesses, and medications on file**")
-    st.markdown(f"- Last period: {_period_summary(on_file.get('last_period_date'))}")
-    st.markdown(f"- Illnesses: {on_file.get('chronic_conditions') or 'None recorded'}")
-    st.markdown(f"- Medications: {on_file.get('medications') or 'None recorded'}")
-    st.radio(
-        "Do you want to update your data?",
-        ["No", "Yes"],
-        key="profile_update_choice",
-        horizontal=True,
+    birth = on_file.get("date_of_birth")
+    age = f"{_age_years(date.fromisoformat(birth))} years" if birth else None
+    rows = [
+        ("Age", age),
+        ("Last period", _period_summary(on_file.get("last_period_date")) if on_file.get("last_period_date") else None),
+        ("Health conditions", on_file.get("chronic_conditions") or None),
+        ("Medications", on_file.get("medications") or None),
+    ]
+    body = []
+    for label, value in rows:
+        shown = (
+            html.escape(value)
+            if value
+            else '<span class="mc-profile-empty">None noted</span>'
+        )
+        body.append(
+            '<div class="mc-profile-row">'
+            f'<div class="mc-profile-label">{label}</div>'
+            f'<div class="mc-profile-value">{shown}</div></div>'
+        )
+    st.markdown('<div class="mc-profile">' + "".join(body) + "</div>", unsafe_allow_html=True)
+    st.caption("Has anything changed since your last visit? Keeping this up to date makes guidance more relevant.")
+    st.button(
+        "Update my profile",
+        icon=":material/edit:",
+        on_click=_open_profile_editor,
+        width="stretch",
     )
-    if st.session_state.profile_update_choice == "Yes":
+
+
+def _render_profile_form() -> None:
+    today = date.today()
+    on_file = st.session_state.get("profile_on_file") or _empty_profile()
+    can_cancel = _profile_problem(on_file) is None
+    with st.form("profile_form", border=False):
         st.date_input(
-            "Date of the last period",
+            "Date of birth",
+            key="profile_birth_date",
+            min_value=_shift_years(today, -100),
+            max_value=_shift_years(today, -10),
+            help="We use this to work out your age.",
+        )
+        st.date_input(
+            "First day of your last period",
             key="profile_period_date",
+            min_value=_shift_years(today, -100),
             max_value=today,
         )
-        chosen = st.session_state.get("profile_period_date")
-        if isinstance(chosen, date) and chosen <= today:
-            st.caption(f"Last period was {(today - chosen).days} days ago.")
         st.text_area(
-            "Illnesses",
+            "Health conditions",
             key="profile_conditions",
             height=80,
-            placeholder="For example: migraine, hypothyroidism, PCOS",
+            placeholder="For example: endometriosis, PCOS, hypothyroidism",
         )
         st.text_area(
-            "Medications taken",
+            "Medications",
             key="profile_medications",
             height=80,
-            placeholder="Name and how you take each one, for example: levothyroxine daily",
+            placeholder="Name and how you take it, for example: levothyroxine daily",
         )
+        st.form_submit_button(
+            "Save profile",
+            type="primary",
+            on_click=_save_profile_form,
+            width="stretch",
+        )
+        if can_cancel:
+            st.form_submit_button("Cancel", on_click=_close_profile_editor, width="stretch")
+    if st.session_state.get("profile_error"):
+        st.error(st.session_state.profile_error)
 
-    profile, birth_error, period_error = _profile_from_form()
-    if st.button("Save profile", use_container_width=False):
-        if birth_error or (st.session_state.profile_update_choice == "Yes" and period_error):
-            st.session_state.profile_notice = None
-            st.error(birth_error or period_error)
+
+def _render_sidebar() -> None:
+    with st.sidebar:
+        st.markdown('<div class="mc-side-title">Your health profile</div>', unsafe_allow_html=True)
+        st.caption("Kept privately on this device. We use it to tailor guidance to you.")
+        if st.session_state.profile_editing:
+            _render_profile_form()
         else:
-            _write_profile_file(profile)
-            st.session_state.profile_on_file = {
-                "date_of_birth": profile.get("date_of_birth"),
-                "last_period_date": profile.get("last_period_date"),
-                "chronic_conditions": profile.get("chronic_conditions") or "",
-                "medications": profile.get("medications") or "",
-            }
-            st.session_state.profile_saved_collapse = True
-            st.session_state.profile_notice = "Profile saved on this Mac."
-            st.rerun()
-    if st.session_state.profile_notice and not birth_error:
-        st.success(st.session_state.profile_notice)
-    return profile, birth_error, period_error
+            _render_profile_summary()
+        notice = st.session_state.get("profile_notice")
+        if notice:
+            st.success(notice, icon=":material/check_circle:")
+            st.session_state.profile_notice = None
+        st.divider()
+        st.markdown(
+            '<div class="mc-emergency"><strong>Need urgent help?</strong> If symptoms are severe, '
+            "sudden, or getting worse (for example heavy bleeding, fainting, or severe pain), "
+            "contact emergency services now.</div>",
+            unsafe_allow_html=True,
+        )
+        st.write("")
+        with st.expander("App maintenance"):
+            st.caption("Refresh the health library after new guideline PDFs are added.")
+            st.button("Refresh health library", on_click=_request_rebuild, width="stretch")
+
+
+def _render_brand() -> None:
+    st.markdown(
+        '<div class="mc-brand">'
+        '<div class="mc-brand-name">MediCare <span>· women\'s health companion</span></div>'
+        '<div class="mc-badge">🔒 Private, stays on this device</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_kb_problem(kb_error: str) -> None:
+    st.error(
+        "The health library isn't ready, so guidance is unavailable right now.",
+        icon=":material/error:",
+    )
+    with st.expander("Technical details"):
+        st.code(kb_error, language=None)
+        st.button("Try again", on_click=_request_rebuild)
 
 
 def _ollama_failure_message(exc: Exception) -> str:
@@ -1171,15 +1308,43 @@ def _ollama_failure_message(exc: Exception) -> str:
     return message
 
 
+def _handle_audio() -> None:
+    audio = st.audio_input(
+        "Record your symptoms",
+        key=f"symptom_audio_{st.session_state.intake_version}",
+        label_visibility="collapsed",
+    )
+    if audio is None:
+        return
+    token = _audio_token(audio)
+    if st.session_state.audio_token == token:
+        return
+    with st.spinner("Listening back to your recording..."):
+        try:
+            transcript = transcribe_upload(audio)
+        except Exception as exc:
+            st.session_state.audio_token = token
+            st.session_state.transcription_error = str(exc)
+            return
+    st.session_state.audio_token = token
+    st.session_state.transcription_error = None
+    st.session_state.transcribed_text = transcript
+    st.session_state.transcript_version += 1
+
+
 def _handle_followup_audio(version: int) -> None:
     """Transcribe a follow-up recording into the single review box."""
-    audio = st.audio_input("Record a follow-up", key=f"followup_audio_{version}")
+    audio = st.audio_input(
+        "Record a follow-up",
+        key=f"followup_audio_{version}",
+        label_visibility="collapsed",
+    )
     if audio is None:
         return
     token = _audio_token(audio)
     if st.session_state.followup_audio_token == token:
         return
-    with st.spinner("Transcribing your follow-up on this Mac..."):
+    with st.spinner("Listening back to your follow-up..."):
         try:
             transcript = transcribe_upload(audio)
         except Exception as exc:
@@ -1192,275 +1357,305 @@ def _handle_followup_audio(version: int) -> None:
     st.session_state.followup_draft_version += 1
 
 
-def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
-    """One follow-up box, by voice or text, checked against the full answer."""
-    thread = analysis.setdefault("thread", [])
-    version = st.session_state.followup_version
-    st.divider()
-    if thread:
-        for index, turn in enumerate(thread):
-            role = "user" if turn.get("role") == "user" else "assistant"
-            with st.chat_message(role):
-                st.markdown(turn.get("content", ""))
-                if role == "assistant":
-                    _render_checked_sources(
-                        turn.get("content", ""),
-                        analysis.get("symptoms", ""),
-                    )
-                sources = turn.get("sources") or []
-                # if sources:
-                #     with st.expander(f"Retrieved passages for reply {index // 2 + 1}"):
-                #         _render_source_list(sources)
-
-    st.subheader("Follow-up")
-    st.caption(
-        "Record or type one message. You can say what you want to avoid, "
-        "what you already discussed with a doctor, or what still does not fit. "
-        "Check the transcript before you send it. The full answer above is sent with it."
-    )
-    _handle_followup_audio(version)
-    if st.session_state.followup_transcription_error:
-        st.error(st.session_state.followup_transcription_error)
-    followup = st.text_area(
-        "Review and edit your follow-up:",
-        value=st.session_state.followup_text,
-        key=f"followup_draft_{version}_{st.session_state.followup_draft_version}",
-        height=140,
-        placeholder="For example: I already discussed painkillers with my doctor, and I want to avoid anything that makes me drowsy.",
-    )
-    if st.button("Continue conversation", type="primary", disabled=vectorstore is None):
-        message = followup.strip()
-        if not message:
-            st.warning("Record or type a follow-up before sending it.")
-            return
-        if vectorstore is None:
-            st.error("The local knowledge base is not ready.")
-            return
-        with st.spinner("Continuing with MedGemma on this Mac..."):
-            try:
-                reply, documents = continue_conversation(
-                    vectorstore,
-                    analysis,
-                    message,
-                )
-            except Exception as exc:
-                st.error(_ollama_failure_message(exc))
-                return
-        thread.append({"role": "user", "content": message})
-        thread.append(
-            {
-                "role": "assistant",
-                "content": reply,
-                "sources": _plain_sources(documents),
-            }
-        )
-        st.session_state.followup_text = ""
-        st.session_state.followup_draft_version += 1
-        st.rerun()
+def _reset_followup_state() -> None:
+    st.session_state.followup_version += 1
+    st.session_state.followup_text = ""
+    st.session_state.followup_draft_version += 1
+    st.session_state.followup_audio_token = None
+    st.session_state.followup_transcription_error = None
+    st.session_state.followup_error = None
 
 
-def _render_source_list(sources: list[dict]) -> None:
-    if not sources:
-        st.write("No chunks were retrieved.")
-        return
-    for index, source in enumerate(sources, start=1):
-        metadata = source.get("metadata") or {}
-        label = metadata.get("source", "unknown")
-        kind = metadata.get("source_type", "unknown")
-        details = []
-        if "page" in metadata:
-            details.append(f"page {metadata['page']}")
-        if "row_index" in metadata:
-            details.append(f"row {metadata['row_index']}")
-        suffix = f" ({', '.join(details)})" if details else ""
-        st.markdown(f"**{index}. {label}** · `{kind}`{suffix}")
-        st.text(source.get("content", ""))
-
-
-def _handle_audio() -> None:
-    audio = st.audio_input("Record your symptoms")
-    if audio is None:
-        return
-    st.audio(audio)
-    token = _audio_token(audio)
-    if st.session_state.audio_token == token:
-        return
-    with st.spinner("Transcribing on this Mac with Whisper (CPU, int8)..."):
-        try:
-            transcript = transcribe_upload(audio)
-        except Exception as exc:
-            st.session_state.audio_token = token
-            st.session_state.transcription_error = str(exc)
-            return
-    st.session_state.audio_token = token
-    st.session_state.transcription_error = None
-    st.session_state.transcribed_text = transcript
-    st.session_state.transcript_version += 1
+def _start_new_conversation() -> None:
     st.session_state.analysis = None
+    st.session_state.analysis_error = None
+    st.session_state.transcribed_text = ""
+    st.session_state.transcript_version += 1
+    st.session_state.intake_version += 1
+    st.session_state.audio_token = None
+    st.session_state.transcription_error = None
+    _reset_followup_state()
+
+
+def _render_welcome(vectorstore: Chroma | None) -> None:
+    """First screen: a centered voice prompt and a transcript to check."""
+    st.markdown(
+        '<div class="mc-hero">'
+        "<h1>How are you feeling today?</h1>"
+        "<p>Tell me what's going on in your own words: what you're noticing, "
+        "when it started, and what worries you. I'll share guidance from trusted "
+        "sources, and you can ask follow-up questions.</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    _, center, _ = st.columns([1, 6, 1])
+    with center:
+        problem = _profile_problem(st.session_state.profile_on_file)
+        if problem:
+            st.info(
+                "Start with your profile in the panel on the left. Your age and cycle "
+                "help make the guidance relevant to you.",
+                icon=":material/person:",
+            )
+        st.markdown(
+            '<div class="mc-mic-hint">Tap the microphone and start speaking</div>',
+            unsafe_allow_html=True,
+        )
+        _handle_audio()
+        if st.session_state.transcription_error:
+            st.error(st.session_state.transcription_error)
+
+        symptoms = st.text_area(
+            "Check what I heard, or type instead",
+            value=st.session_state.transcribed_text,
+            height=150,
+            key=f"symptom_draft_{st.session_state.transcript_version}",
+            placeholder="Your words appear here after recording. You can correct them, or simply type.",
+        )
+        if st.session_state.analysis_error:
+            st.error(st.session_state.analysis_error)
+
+        if st.button(
+            "Get guidance",
+            type="primary",
+            icon=":material/favorite:",
+            width="stretch",
+            disabled=vectorstore is None,
+        ):
+            text = symptoms.strip()
+            if problem:
+                st.warning(problem)
+            elif not text:
+                st.warning("Record or type how you're feeling first.")
+            else:
+                _reset_followup_state()
+                st.session_state.analysis_error = None
+                st.session_state.analysis = {
+                    "symptoms": text,
+                    "profile": _profile_text(_current_profile()),
+                    "answer": None,
+                    "sources": [],
+                    "thread": [],
+                }
+                st.session_state.scroll_to_latest = True
+                st.rerun()
+
+        topics = (
+            "Painful periods",
+            "Heavy or irregular bleeding",
+            "Pelvic pain",
+            "Discharge or itching",
+            "PMS and mood",
+            "Menopause changes",
+        )
+        st.markdown(
+            '<div class="mc-topics">'
+            + "".join(f'<span class="mc-topic">{topic}</span>' for topic in topics)
+            + "</div>"
+            '<div class="mc-fineprint">MediCare shares information, not a diagnosis. '
+            "Always confirm next steps with a clinician.</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _latest_anchor() -> None:
+    st.markdown('<div id="latest-answer"></div>', unsafe_allow_html=True)
+
+
+def _scroll_to_latest() -> None:
+    """Scroll the page so the newest reply starts at the top of the view."""
+    st.session_state.scroll_nonce += 1
+    components.html(
+        f"""
+        <script>
+            // run {st.session_state.scroll_nonce}
+            const doc = window.parent.document;
+            let tries = 0;
+            const go = () => {{
+                const target = doc.getElementById("latest-answer");
+                if (target) {{
+                    target.scrollIntoView({{behavior: "smooth", block: "start"}});
+                }} else if (tries++ < 30) {{
+                    setTimeout(go, 100);
+                }}
+            }};
+            setTimeout(go, 150);
+        </script>
+        """,
+        height=0,
+    )
+
+
+def _render_assistant_turn(content: str, sources: list[dict], symptoms: str) -> None:
+    with st.chat_message("assistant"):
+        st.markdown(content)
+        _render_learn_more(sources, content, symptoms)
+
+
+def _answer_first_question(analysis: dict, vectorstore: Chroma | None) -> None:
+    with st.chat_message("assistant"):
+        with st.spinner("Reading trusted sources and preparing your guidance..."):
+            try:
+                if vectorstore is None:
+                    raise RuntimeError("The health library isn't ready yet.")
+                documents = retrieve_context(vectorstore, analysis["symptoms"], analysis["profile"])
+                answer = generate_answer(analysis["symptoms"], analysis["profile"], documents)
+            except Exception as exc:
+                st.session_state.analysis = None
+                st.session_state.analysis_error = _ollama_failure_message(exc)
+                st.session_state.transcribed_text = analysis["symptoms"]
+                st.session_state.transcript_version += 1
+                st.rerun()
+    analysis["answer"] = answer
+    analysis["sources"] = _plain_sources(documents)
+    st.session_state.scroll_to_latest = True
+    st.rerun()
+
+
+def _answer_followup(analysis: dict, vectorstore: Chroma | None) -> None:
+    thread = analysis["thread"]
+    message = thread[-1]["content"]
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking about your follow-up..."):
+            try:
+                if vectorstore is None:
+                    raise RuntimeError("The health library isn't ready yet.")
+                earlier = {**analysis, "thread": thread[:-1]}
+                reply, documents = continue_conversation(vectorstore, earlier, message)
+            except Exception as exc:
+                thread.pop()
+                st.session_state.followup_error = _ollama_failure_message(exc)
+                st.session_state.followup_text = message
+                st.session_state.followup_draft_version += 1
+                st.rerun()
+    thread.append({"role": "assistant", "content": reply, "sources": _plain_sources(documents)})
+    st.session_state.scroll_to_latest = True
+    st.rerun()
+
+
+def _render_composer(analysis: dict, vectorstore: Chroma | None) -> None:
+    """One follow-up box at the bottom of the thread, by voice or text."""
+    version = st.session_state.followup_version
+    with st.container(border=True):
+        st.markdown("**Anything else you'd like to ask?**")
+        st.caption(
+            "Speak or type. You can say what you've already discussed with a doctor, "
+            "what you'd prefer to avoid, or what still doesn't fit."
+        )
+        _handle_followup_audio(version)
+        if st.session_state.followup_transcription_error:
+            st.error(st.session_state.followup_transcription_error)
+        followup = st.text_area(
+            "Your follow-up",
+            value=st.session_state.followup_text,
+            key=f"followup_draft_{version}_{st.session_state.followup_draft_version}",
+            height=100,
+            label_visibility="collapsed",
+            placeholder="For example: I already discussed painkillers with my doctor and want to avoid anything that makes me drowsy.",
+        )
+        if st.session_state.followup_error:
+            st.error(st.session_state.followup_error)
+        if st.button(
+            "Send",
+            type="primary",
+            icon=":material/send:",
+            disabled=vectorstore is None,
+        ):
+            message = followup.strip()
+            if not message:
+                st.warning("Record or type a follow-up before sending it.")
+                return
+            analysis["thread"].append({"role": "user", "content": message})
+            st.session_state.followup_text = ""
+            st.session_state.followup_draft_version += 1
+            st.session_state.followup_error = None
+            st.session_state.scroll_to_latest = True
+            st.rerun()
+
+
+def _render_conversation(analysis: dict, vectorstore: Chroma | None) -> None:
+    """Chat thread: the first question, every answer, and the follow-up box."""
+    st.button(
+        "New conversation",
+        icon=":material/add:",
+        on_click=_start_new_conversation,
+        type="tertiary",
+    )
+
+    thread = analysis.setdefault("thread", [])
+    symptoms = analysis.get("symptoms", "")
+    messages = [{"role": "user", "content": symptoms}]
+    if analysis.get("answer") is not None:
+        messages.append(
+            {"role": "assistant", "content": analysis["answer"], "sources": analysis.get("sources") or []}
+        )
+    messages.extend(thread)
+
+    waiting_for_first = analysis.get("answer") is None
+    waiting_for_followup = bool(thread) and thread[-1].get("role") == "user"
+    pending = waiting_for_first or waiting_for_followup
+    last_assistant = max(
+        (index for index, message in enumerate(messages) if message.get("role") == "assistant"),
+        default=None,
+    )
+
+    for index, message in enumerate(messages):
+        if not pending and index == last_assistant:
+            _latest_anchor()
+        if message.get("role") == "assistant":
+            _render_assistant_turn(message.get("content", ""), message.get("sources") or [], symptoms)
+        else:
+            with st.chat_message("user"):
+                st.markdown(message.get("content", ""))
+
+    if pending:
+        _latest_anchor()
+    if st.session_state.scroll_to_latest:
+        st.session_state.scroll_to_latest = False
+        _scroll_to_latest()
+
+    if waiting_for_first:
+        _answer_first_question(analysis, vectorstore)
+        return
+    if waiting_for_followup:
+        _answer_followup(analysis, vectorstore)
+        return
+
+    _render_composer(analysis, vectorstore)
+    st.markdown(
+        '<div class="mc-fineprint">MediCare shares information, not a diagnosis. '
+        "Confirm any next step with a licensed clinician.</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="MediCare Local",
-        page_icon="🩺",
+        page_title="MediCare · Women's health companion",
+        page_icon="🌸",
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    st.markdown(
-        """
-        <style>
-            .block-container {padding-top: 1.4rem; max-width: 1120px;}
-            .source-row {display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.25rem 0 0.4rem;}
-            .source-chip {
-                display: inline-block;
-                padding: 0.35rem 0.75rem;
-                border: 1px solid rgba(49, 51, 63, 0.2);
-                border-radius: 999px;
-                text-decoration: none;
-                font-size: 0.9rem;
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(APP_CSS, unsafe_allow_html=True)
     _init_session_state()
 
-    st.title("MediCare Local")
-    st.caption(
-        "Local-first symptom intake for Apple Silicon. "
-        "Speech is transcribed on device, you review the text, then MedGemma "
-        "answers from a private ChromaDB index."
-    )
-    st.info(
-        "Prototype only. This tool does not diagnose, prescribe, or replace a "
-        "clinician. If symptoms are severe, sudden, or worsening, contact "
-        "emergency services.",
-        icon="ℹ️",
-    )
-
     kb_error = None
-    stats = None
     vectorstore = None
     try:
-        vectorstore, stats = load_knowledge_base()
+        vectorstore, _stats = load_knowledge_base()
     except Exception as exc:
         kb_error = str(exc)
 
-    _render_sidebar(stats, kb_error)
+    _render_sidebar()
+    _render_brand()
+    if kb_error:
+        _render_kb_problem(kb_error)
 
-    intake, result = st.columns([1.05, 0.95], gap="large")
-
-    with intake:
-        profile, birth_error, period_error = _render_profile()
-        st.divider()
-        st.subheader("Describe symptoms")
-        st.markdown(
-            "Record a short description. The transcript is placed in the editor "
-            "so you can correct medical words before anything is analyzed."
-        )
-        _handle_audio()
-        if kb_error:
-            st.error(kb_error)
-        if st.session_state.transcription_error:
-            st.error(st.session_state.transcription_error)
-
-        transcribed_text = st.session_state.transcribed_text
-        # A new recording bumps transcript_version, which gives the text area
-        # a fresh key so value=transcribed_text replaces the previous draft.
-        # Edits persist until the next recording. Analysis uses this text only.
-        edited_symptoms = st.text_area(
-            "Review and edit your symptoms:",
-            value=transcribed_text,
-            height=220,
-            key=f"symptom_draft_{st.session_state.transcript_version}",
-            placeholder="Your transcript appears here. You can also type symptoms directly.",
-        )
-
-        analyze = st.button(
-            "Analyze Symptoms",
-            type="primary",
-            disabled=vectorstore is None,
-        )
-        if analyze:
-            symptoms = edited_symptoms.strip()
-            if birth_error:
-                st.warning(birth_error)
-            elif period_error:
-                st.warning(period_error)
-            elif not symptoms:
-                st.warning("Enter or record symptoms before analysis.")
-            elif vectorstore is None:
-                st.error(kb_error or "The local knowledge base is not ready.")
-            else:
-                profile_text = _profile_text(profile)
-                _write_profile_file(profile)
-                st.session_state.profile_on_file = {
-                    "date_of_birth": profile.get("date_of_birth"),
-                    "last_period_date": profile.get("last_period_date"),
-                    "chronic_conditions": profile.get("chronic_conditions") or "",
-                    "medications": profile.get("medications") or "",
-                }
-                st.session_state.profile_notice = "Profile saved on this Mac."
-                with st.status("Running local retrieval...", expanded=True) as status:
-                    try:
-                        status.write(
-                            "Embedding the reviewed symptoms and health profile, "
-                            "then searching the local collection."
-                        )
-                        documents = retrieve_context(vectorstore, symptoms, profile_text)
-                        status.write(
-                            f"Retrieved {len(documents)} chunks from PDFs and "
-                            "Hugging Face QA data."
-                        )
-                        status.write(
-                            f"Sending the profile, context, and symptoms to {LLM_MODEL}."
-                        )
-                        answer = generate_answer(symptoms, profile_text, documents)
-                    except Exception as exc:
-                        status.update(label="Analysis failed", state="error")
-                        st.session_state.analysis = None
-                        st.error(_ollama_failure_message(exc))
-                    else:
-                        status.update(label="Analysis complete", state="complete")
-                        st.session_state.followup_version += 1
-                        st.session_state.followup_text = ""
-                        st.session_state.followup_draft_version += 1
-                        st.session_state.followup_audio_token = None
-                        st.session_state.followup_transcription_error = None
-                        st.session_state.analysis = {
-                            "symptoms": symptoms,
-                            "profile": profile_text,
-                            "answer": answer,
-                            "sources": _plain_sources(documents),
-                            "thread": [],
-                        }
-
-    with result:
-        st.subheader("Guidance")
-        analysis = st.session_state.analysis
-        if not analysis:
-            st.markdown(
-                "The response will appear here after you click **Analyze Symptoms**. "
-                "Retrieval does not run on the recording itself."
-            )
-        else:
-            st.markdown("**Health profile used**")
-            st.text(analysis.get("profile") or "No profile was stored with this analysis.")
-            st.markdown("**Reviewed symptoms**")
-            st.write(analysis["symptoms"])
-            st.markdown("**MedGemma**")
-            st.markdown(analysis["answer"])
-            _render_checked_sources(
-                analysis["answer"],
-                analysis.get("symptoms", ""),
-                analysis.get("profile", ""),
-            )
-            _render_sources(analysis["sources"])
-            _render_followup(analysis, vectorstore)
-            st.caption(
-                "Replies are text only. Follow-up recordings are transcribed on this Mac, "
-                "then sent only to Ollama on this Mac. Confirm any next step with a licensed clinician."
-            )
+    analysis = st.session_state.analysis
+    if analysis is None:
+        _render_welcome(vectorstore)
+    else:
+        _render_conversation(analysis, vectorstore)
 
 
 if __name__ == "__main__":
