@@ -27,7 +27,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -1113,24 +1113,68 @@ APP_CSS = """
 <style>
     .block-container {padding-top: 3.5rem; padding-bottom: 3rem; max-width: 900px;}
 
+    .st-key-mc_banner {
+        position: relative; overflow: hidden; isolation: isolate;
+        background: linear-gradient(120deg, #F6D9E3 0%, #FBEEF2 48%, #EDE1F4 100%);
+        border: 1px solid #EFD3DE; border-radius: 26px;
+        padding: 1.1rem 1.6rem 1.4rem; margin-bottom: 0.4rem;
+        box-shadow: 0 10px 30px -18px rgba(142, 58, 94, 0.45);
+    }
+    .st-key-mc_banner::before, .st-key-mc_banner::after {
+        content: ""; position: absolute; z-index: -1; border-radius: 50%; filter: blur(2px);
+    }
+    .st-key-mc_banner::before {
+        width: 260px; height: 260px; right: -70px; top: -110px;
+        background: radial-gradient(circle at 35% 35%, rgba(217, 139, 168, 0.55), rgba(217, 139, 168, 0) 70%);
+    }
+    .st-key-mc_banner::after {
+        width: 220px; height: 220px; left: 38%; bottom: -150px;
+        background: radial-gradient(circle at 50% 50%, rgba(167, 128, 199, 0.35), rgba(167, 128, 199, 0) 70%);
+    }
+    .st-key-mc_banner_compact {
+        background: linear-gradient(120deg, #F6D9E3 0%, #FBEEF2 60%, #EDE1F4 100%);
+        border: 1px solid #EFD3DE; border-radius: 20px;
+        padding: 0.45rem 1.1rem; margin-bottom: 0.4rem;
+    }
+
     .st-key-home button {
         background: transparent; border: none; box-shadow: none;
-        color: #8E3A5E; font-weight: 700; padding: 0.1rem 0.35rem;
-        white-space: nowrap;
+        color: #8E3A5E; padding: 0.1rem 0.2rem; white-space: nowrap;
     }
-    .st-key-home button p {font-size: 1.25rem; font-weight: 700; white-space: nowrap;}
-    .st-key-home button:hover {background: #F7ECEF; color: #6E2448;}
-    .mc-brand-tag {color: #2F2533; font-size: 1rem; font-weight: 500;
-        padding-top: 0.55rem; white-space: nowrap;}
-    .mc-badge-wrap {display: flex; justify-content: flex-end; padding-top: 0.35rem;}
-    .mc-badge {font-size: 0.78rem; color: #6B5A66; background: #F7ECEF;
-        border-radius: 999px; padding: 0.25rem 0.7rem; white-space: nowrap;}
-    .mc-notice {background: #FFF6F8; border: 1px solid #EBCFDA; border-radius: 14px;
-        padding: 0.75rem 1rem; font-size: 0.9rem; line-height: 1.45; color: #6B5A66;
-        margin: 0.15rem 0 0.6rem;}
+    .st-key-home button p {font-size: 1.35rem; font-weight: 800; letter-spacing: 0.01em;
+        white-space: nowrap;}
+    .st-key-home button span[data-testid="stIconMaterial"] {
+        background: linear-gradient(135deg, #B0466F, #D98BA8); color: #FFFFFF;
+        border-radius: 50%; padding: 0.3rem; font-size: 1.1rem;
+        box-shadow: 0 4px 10px -4px rgba(176, 70, 111, 0.7);
+    }
+    .st-key-home button:hover {background: rgba(255, 255, 255, 0.45);}
+    .st-key-home button:hover p {color: #6E2448;}
+
+    .mc-badge-wrap {display: flex; justify-content: flex-end;}
+    .mc-badge {font-size: 0.78rem; color: #6B5A66; background: rgba(255, 255, 255, 0.7);
+        border: 1px solid rgba(235, 207, 218, 0.9);
+        border-radius: 999px; padding: 0.25rem 0.75rem; white-space: nowrap;}
+
+    .mc-greeting {font-size: 0.85rem; font-weight: 700; letter-spacing: 0.08em;
+        text-transform: uppercase; color: #A0517A; margin-top: 0.35rem;}
+    .mc-banner-title {font-size: 1.65rem; font-weight: 800; line-height: 1.25;
+        color: #2F2533; margin: 0.2rem 0 0.35rem;}
+    .mc-banner-title em {font-style: normal; color: #B0466F;}
+    .mc-banner-sub {font-size: 0.98rem; color: #5E4E5A; max-width: 560px; line-height: 1.5;}
+    .mc-pills {display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.9rem;}
+    .mc-pill {display: inline-flex; align-items: center; gap: 0.35rem;
+        background: rgba(255, 255, 255, 0.75); border: 1px solid rgba(235, 207, 218, 0.9);
+        border-radius: 999px; padding: 0.3rem 0.8rem; font-size: 0.84rem; color: #4A3A46;}
+
+    .mc-notice {display: flex; gap: 0.7rem; align-items: flex-start;
+        background: #FFFFFF; border: 1px solid #EBCFDA; border-left: 4px solid #D9534F;
+        border-radius: 14px; padding: 0.7rem 1rem; font-size: 0.88rem; line-height: 1.45;
+        color: #6B5A66; margin: 0.4rem 0 0.6rem;}
+    .mc-notice-icon {font-size: 1.1rem; line-height: 1.3;}
     .mc-notice strong {color: #8E3A5E;}
 
-    .mc-hero {text-align: center; margin: 2.5rem auto 1.5rem; max-width: 620px;}
+    .mc-hero {text-align: center; margin: 1.6rem auto 1.4rem; max-width: 620px;}
     .mc-hero h1 {font-size: 2.3rem; line-height: 1.2; margin-bottom: 0.6rem; color: #2F2533;}
     .mc-hero p {font-size: 1.05rem; color: #6B5A66; margin: 0;}
     .mc-mic-hint {text-align: center; color: #8E3A5E; font-weight: 600;
@@ -1283,34 +1327,54 @@ def _render_sidebar() -> None:
             st.button("Refresh health library", on_click=_request_rebuild, width="stretch")
 
 
-def _render_brand() -> None:
-    """Logo returns to the start screen and refreshes the page."""
-    home, tag, badge = st.columns([2.0, 2.6, 1.8])
-    with home:
-        st.button(
-            "MediCare",
-            icon=":material/favorite:",
-            key="home",
-            help="Back to the start",
-            on_click=_start_new_conversation,
-            type="tertiary",
-            width="content",
-        )
-    with tag:
-        st.markdown(
-            '<div class="mc-brand-tag">women\'s health companion</div>',
-            unsafe_allow_html=True,
-        )
-    with badge:
-        st.markdown(
-            '<div class="mc-badge-wrap"><div class="mc-badge">🔒 Private, stays on this device</div></div>',
-            unsafe_allow_html=True,
-        )
+def _greeting() -> str:
+    hour = datetime.now().hour
+    if hour < 12:
+        return "Good morning"
+    if hour < 18:
+        return "Good afternoon"
+    return "Good evening"
+
+
+def _render_brand(compact: bool) -> None:
+    """Banner with the logo, which returns to the start screen."""
+    with st.container(key="mc_banner_compact" if compact else "mc_banner"):
+        home, badge = st.columns([1, 1], vertical_alignment="center")
+        with home:
+            st.button(
+                "MediCare",
+                icon=":material/favorite:",
+                key="home",
+                help="Back to the start",
+                on_click=_start_new_conversation,
+                type="tertiary",
+                width="content",
+            )
+        with badge:
+            st.markdown(
+                '<div class="mc-badge-wrap"><div class="mc-badge">🔒 Private, stays on this device</div></div>',
+                unsafe_allow_html=True,
+            )
+        if not compact:
+            st.markdown(
+                f'<div class="mc-greeting">{_greeting()} 🌸</div>'
+                '<div class="mc-banner-title">Your companion for <em>gynecological health</em></div>'
+                '<div class="mc-banner-sub">Talk through periods, pain, cycles, fertility, and '
+                "menopause in your own words. Calm, private, and backed by checked sources.</div>"
+                '<div class="mc-pills">'
+                '<span class="mc-pill">🎙️ Speak or type</span>'
+                '<span class="mc-pill">📚 Checked medical sources</span>'
+                '<span class="mc-pill">💬 Ask follow-up questions</span>'
+                '<span class="mc-pill">🩺 Prepare for your doctor visit</span>'
+                "</div>",
+                unsafe_allow_html=True,
+            )
     st.markdown(
-        '<div class="mc-notice"><strong>This is help, not a medical consultation.</strong> '
+        '<div class="mc-notice"><span class="mc-notice-icon">⚠️</span><div>'
+        "<strong>This is help, not a medical consultation.</strong> "
         "MediCare does not diagnose, prescribe, or replace a clinician. "
-        "If symptoms are severe, sudden, or getting worse — heavy bleeding, fainting, "
-        "severe pain, chest pain, or trouble breathing — contact emergency services now.</div>",
+        "If symptoms are severe, sudden, or getting worse (heavy bleeding, fainting, "
+        "severe pain, chest pain, or trouble breathing), contact emergency services now.</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -1634,7 +1698,7 @@ def main() -> None:
         kb_error = str(exc)
 
     _render_sidebar()
-    _render_brand()
+    _render_brand(compact=st.session_state.analysis is not None)
     if kb_error:
         _render_kb_problem(kb_error)
 
