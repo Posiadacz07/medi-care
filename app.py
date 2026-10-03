@@ -129,6 +129,44 @@ CLINICAL_PROMPT = PromptTemplate(
     ),
 )
 
+FOLLOWUP_PROMPT = PromptTemplate(
+    input_variables=[
+        "context",
+        "symptoms",
+        "profile",
+        "first_answer",
+        "history",
+        "followup",
+    ],
+    template=(
+        "You are MediCare Local, continuing a conversation on this device. "
+        "You are not a physician. You do not diagnose, prescribe, or invent evidence.\n\n"
+        "The user has already received a first answer. They may say that some "
+        "suggestions were already discussed with a doctor, that they want to "
+        "avoid some options, or that the answer did not address the concern. "
+        "Use the retrieved context as your evidence. If it does not support a "
+        "claim, say so. Do not invent citations, doses, or study results.\n\n"
+        "Do not tell the user to start, stop, or change a medicine or dose. "
+        "Treat a doctor's earlier discussion as already settled unless the user "
+        "asks to revisit it. Do not recommend an option the user wants to avoid. "
+        "If the retrieved context only supports an avoided option, say that and "
+        "leave the decision with a clinician.\n\n"
+        "If the symptoms suggest an emergency (trouble breathing, chest pain, "
+        "fainting, one-sided weakness, severe bleeding, confusion, a rapidly "
+        "worsening allergic reaction, or thoughts of self-harm), tell the "
+        "person to contact emergency services now.\n\n"
+        "Write a short conversational reply. Acknowledge the constraint, answer "
+        "the remaining concern, and end by asking whether this now addresses it.\n\n"
+        "Health profile:\n{profile}\n\n"
+        "Reviewed symptoms:\n{symptoms}\n\n"
+        "Retrieved context:\n{context}\n\n"
+        "First answer:\n{first_answer}\n\n"
+        "Conversation so far:\n{history}\n\n"
+        "User follow-up:\n{followup}\n\n"
+        "Response:"
+    ),
+)
+
 
 def _clean_text(value: object) -> str:
     """Flatten a dataset cell into a single line of text."""
@@ -624,6 +662,18 @@ def retrieve_context(vectorstore: Chroma, symptoms: str, profile_text: str) -> l
     return vectorstore.similarity_search(query, k=RETRIEVAL_K)
 
 
+def _invoke_medgemma(prompt: str) -> str:
+    llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
+    raw = llm.invoke(prompt)
+    if isinstance(raw, str):
+        answer = raw.strip()
+    else:
+        answer = str(getattr(raw, "content", raw)).strip()
+    if not answer:
+        raise RuntimeError("MedGemma returned an empty response.")
+    return answer
+
+
 def generate_answer(symptoms: str, profile_text: str, retrieved: list[Document]) -> str:
     """Pass retrieved chunks, the health profile, and the reviewed symptoms to MedGemma."""
     context = _context_from_docs(retrieved) or (
@@ -634,15 +684,54 @@ def generate_answer(symptoms: str, profile_text: str, retrieved: list[Document])
         symptoms=symptoms,
         profile=profile_text,
     )
-    llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
-    raw = llm.invoke(prompt)
-    if isinstance(raw, str):
-        answer = raw.strip()
-    else:
-        answer = str(getattr(raw, "content", raw)).strip()
-    if not answer:
-        raise RuntimeError("MedGemma returned an empty response.")
-    return answer
+    return _invoke_medgemma(prompt)
+
+
+def _thread_transcript(thread: list[dict]) -> str:
+    if not thread:
+        return "No follow-up turns yet."
+    lines = []
+    for turn in thread:
+        speaker = "User" if turn.get("role") == "user" else "MedGemma"
+        lines.append(f"{speaker}: {turn.get('content', '')}")
+    return "\n\n".join(lines)
+
+
+def _format_followup(doctor: str, avoid: str, message: str) -> str:
+    parts = []
+    if doctor.strip():
+        parts.append(f"Already discussed with a doctor: {doctor.strip()}")
+    if avoid.strip():
+        parts.append(f"Solutions to avoid: {avoid.strip()}")
+    if message.strip():
+        parts.append(f"What is still missing: {message.strip()}")
+    return "\n".join(parts)
+
+
+def continue_conversation(
+    vectorstore: Chroma,
+    analysis: dict,
+    followup: str,
+) -> tuple[str, list[Document]]:
+    """Retrieve again for the follow-up and answer with the prior conversation."""
+    query = "\n\n".join(
+        part
+        for part in (analysis.get("symptoms", ""), analysis.get("profile", ""), followup)
+        if part
+    )
+    retrieved = vectorstore.similarity_search(query, k=RETRIEVAL_K)
+    context = _context_from_docs(retrieved) or (
+        "No relevant context was retrieved from the local knowledge base."
+    )
+    prompt = FOLLOWUP_PROMPT.format(
+        context=context,
+        symptoms=analysis.get("symptoms", ""),
+        profile=analysis.get("profile", ""),
+        first_answer=analysis.get("answer", ""),
+        history=_thread_transcript(analysis.get("thread") or []),
+        followup=followup,
+    )
+    return _invoke_medgemma(prompt), retrieved
 
 
 def _plain_sources(documents: list[Document]) -> list[dict]:
@@ -860,6 +949,8 @@ def _init_session_state() -> None:
         "transcription_error": None,
         "analysis": None,
         "profile_notice": None,
+        "followup_version": 0,
+        "force_followup": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -911,21 +1002,7 @@ def _render_sources(sources: list[dict]) -> None:
             "Exact chunks returned by similarity search over the single "
             "local collection (PDF guidelines and Hugging Face QA)."
         )
-        if not sources:
-            st.write("No chunks were retrieved.")
-            return
-        for index, source in enumerate(sources, start=1):
-            metadata = source.get("metadata") or {}
-            label = metadata.get("source", "unknown")
-            kind = metadata.get("source_type", "unknown")
-            details = []
-            if "page" in metadata:
-                details.append(f"page {metadata['page']}")
-            if "row_index" in metadata:
-                details.append(f"row {metadata['row_index']}")
-            suffix = f" ({', '.join(details)})" if details else ""
-            st.markdown(f"**{index}. {label}** · `{kind}`{suffix}")
-            st.text(source.get("content", ""))
+        _render_source_list(sources)
 
 
 def _render_profile() -> tuple[dict, str | None, str | None]:
@@ -1001,6 +1078,115 @@ def _render_profile() -> tuple[dict, str | None, str | None]:
     if st.session_state.profile_notice and not birth_error:
         st.success(st.session_state.profile_notice)
     return profile, birth_error, period_error
+
+
+def _ollama_failure_message(exc: Exception) -> str:
+    message = str(exc)
+    if "11434" in message or "Ollama" in message or "ollama" in message:
+        return (
+            "MedGemma could not be reached. Confirm Ollama is "
+            f"running and `{LLM_MODEL}` is pulled. Details: {message}"
+        )
+    return message
+
+
+def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
+    """Ask whether the latest answer is enough, then continue on device."""
+    thread = analysis.setdefault("thread", [])
+    version = st.session_state.followup_version
+    st.divider()
+    st.subheader("Does this address your concern?")
+    if thread:
+        for index, turn in enumerate(thread):
+            role = "user" if turn.get("role") == "user" else "assistant"
+            with st.chat_message(role):
+                st.markdown(turn.get("content", ""))
+                sources = turn.get("sources") or []
+                if sources:
+                    with st.expander(f"Sources for reply {index // 2 + 1}"):
+                        _render_source_list(sources)
+
+    satisfied = st.radio(
+        "Does this answer address your concern?",
+        ["Not yet", "Yes"],
+        key=f"concern_{version}_{len(thread)}",
+        horizontal=True,
+    )
+    if satisfied == "Yes" and not st.session_state.force_followup:
+        st.success("This answer stands. You can still add a follow-up if something is missing.")
+        if st.button("Add a follow-up anyway"):
+            st.session_state.force_followup = True
+            st.rerun()
+        return
+
+    st.caption(
+        "Say what a doctor has already covered, which options you want to avoid, "
+        "or what is still missing. The next reply stays on this Mac and uses the "
+        "same local knowledge base."
+    )
+    doctor = st.text_area(
+        "Already discussed with a doctor",
+        key=f"followup_doctor_{version}",
+        height=70,
+        placeholder="For example: my clinician already recommended ibuprofen for cramps",
+    )
+    avoid = st.text_area(
+        "Solutions I want to avoid",
+        key=f"followup_avoid_{version}",
+        height=70,
+        placeholder="For example: hormonal treatment, or anything that causes drowsiness",
+    )
+    message = st.text_area(
+        "What is still missing?",
+        key=f"followup_message_{version}_{len(thread)}",
+        height=90,
+        placeholder="Ask for a revision of the answer",
+    )
+    if st.button("Continue conversation", type="primary", disabled=vectorstore is None):
+        followup = _format_followup(doctor, avoid, message)
+        if not followup:
+            st.warning(
+                "Add what you discussed with a doctor, what you want to avoid, "
+                "or what is still missing."
+            )
+            return
+        if vectorstore is None:
+            st.error("The local knowledge base is not ready.")
+            return
+        with st.spinner("Continuing with MedGemma on this Mac..."):
+            try:
+                reply, documents = continue_conversation(vectorstore, analysis, followup)
+            except Exception as exc:
+                st.error(_ollama_failure_message(exc))
+                return
+        thread.append({"role": "user", "content": followup})
+        thread.append(
+            {
+                "role": "assistant",
+                "content": reply,
+                "sources": _plain_sources(documents),
+            }
+        )
+        st.session_state.force_followup = False
+        st.rerun()
+
+
+def _render_source_list(sources: list[dict]) -> None:
+    if not sources:
+        st.write("No chunks were retrieved.")
+        return
+    for index, source in enumerate(sources, start=1):
+        metadata = source.get("metadata") or {}
+        label = metadata.get("source", "unknown")
+        kind = metadata.get("source_type", "unknown")
+        details = []
+        if "page" in metadata:
+            details.append(f"page {metadata['page']}")
+        if "row_index" in metadata:
+            details.append(f"row {metadata['row_index']}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        st.markdown(f"**{index}. {label}** · `{kind}`{suffix}")
+        st.text(source.get("content", ""))
 
 
 def _handle_audio() -> None:
@@ -1136,20 +1322,17 @@ def main() -> None:
                     except Exception as exc:
                         status.update(label="Analysis failed", state="error")
                         st.session_state.analysis = None
-                        message = str(exc)
-                        if "11434" in message or "Ollama" in message or "ollama" in message:
-                            message = (
-                                "MedGemma could not be reached. Confirm Ollama is "
-                                f"running and `{LLM_MODEL}` is pulled. Details: {message}"
-                            )
-                        st.error(message)
+                        st.error(_ollama_failure_message(exc))
                     else:
                         status.update(label="Analysis complete", state="complete")
+                        st.session_state.followup_version += 1
+                        st.session_state.force_followup = False
                         st.session_state.analysis = {
                             "symptoms": symptoms,
                             "profile": profile_text,
                             "answer": answer,
                             "sources": _plain_sources(documents),
+                            "thread": [],
                         }
 
     with result:
@@ -1168,9 +1351,11 @@ def main() -> None:
             st.markdown("**MedGemma**")
             st.markdown(analysis["answer"])
             _render_sources(analysis["sources"])
+            _render_followup(analysis, vectorstore)
             st.caption(
                 "Text only. This prototype has no text-to-speech. "
-                "Confirm any next step with a licensed clinician."
+                "Follow-up messages stay in this browser session and are sent only "
+                "to Ollama on this Mac. Confirm any next step with a licensed clinician."
             )
 
 

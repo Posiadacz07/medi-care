@@ -103,6 +103,7 @@ On first launch the app downloads the three Hugging Face sources (up to the row 
 3. Edit the text in **Review and edit your symptoms**.
 4. Click **Analyze Symptoms**. Retrieval starts only on that click.
 5. Read the MedGemma answer. Open **Retrieved source chunks** to see the exact ChromaDB passages used.
+6. Answer **Does this answer address your concern?** If not, note what a doctor already covered, which options to avoid, or what is still missing, then click **Continue conversation**.
 
 There is no text-to-speech. The answer is text only.
 
@@ -110,6 +111,6 @@ There is no text-to-speech. The answer is text only.
 
 - Date of birth, last period, illnesses, and medicines are saved only in `patient_profile.json` on this Mac. Age is calculated from the date of birth. Each visit shows the saved period, illnesses, and medicines and asks whether to update them. None of this is uploaded.
 - Microphone audio is written to a temporary file because faster-whisper needs a path, then the file is deleted.
-- The transcript is not sent anywhere until you click **Analyze Symptoms**, and then only to Ollama on `localhost`.
+- The transcript and any follow-up conversation are sent only to Ollama on `localhost`. Follow-up turns stay in the browser session and are not written to disk.
 - ChromaDB is an embedded database in `./chroma_db`. It is not a remote server.
 - Hugging Face is contacted for public training text, not for patient recordings.
