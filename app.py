@@ -1113,12 +1113,22 @@ APP_CSS = """
 <style>
     .block-container {padding-top: 3.5rem; padding-bottom: 3rem; max-width: 900px;}
 
-    .mc-brand {display: flex; align-items: center; justify-content: space-between;
-        gap: 1rem; margin-bottom: 0.5rem;}
-    .mc-brand-name {font-size: 1.15rem; font-weight: 700; color: #8E3A5E; letter-spacing: 0.01em;}
-    .mc-brand-name span {color: #2F2533; font-weight: 500;}
+    .st-key-home button {
+        background: transparent; border: none; box-shadow: none;
+        color: #8E3A5E; font-weight: 700; padding: 0.1rem 0.35rem;
+        white-space: nowrap;
+    }
+    .st-key-home button p {font-size: 1.25rem; font-weight: 700; white-space: nowrap;}
+    .st-key-home button:hover {background: #F7ECEF; color: #6E2448;}
+    .mc-brand-tag {color: #2F2533; font-size: 1rem; font-weight: 500;
+        padding-top: 0.55rem; white-space: nowrap;}
+    .mc-badge-wrap {display: flex; justify-content: flex-end; padding-top: 0.35rem;}
     .mc-badge {font-size: 0.78rem; color: #6B5A66; background: #F7ECEF;
         border-radius: 999px; padding: 0.25rem 0.7rem; white-space: nowrap;}
+    .mc-notice {background: #FFF6F8; border: 1px solid #EBCFDA; border-radius: 14px;
+        padding: 0.75rem 1rem; font-size: 0.9rem; line-height: 1.45; color: #6B5A66;
+        margin: 0.15rem 0 0.6rem;}
+    .mc-notice strong {color: #8E3A5E;}
 
     .mc-hero {text-align: center; margin: 2.5rem auto 1.5rem; max-width: 620px;}
     .mc-hero h1 {font-size: 2.3rem; line-height: 1.2; margin-bottom: 0.6rem; color: #2F2533;}
@@ -1129,7 +1139,6 @@ APP_CSS = """
         margin: 1.4rem 0 0.4rem;}
     .mc-topic {font-size: 0.82rem; color: #6B5A66; background: #FFFFFF;
         border: 1px dashed #E3C9D3; border-radius: 999px; padding: 0.25rem 0.7rem;}
-    .mc-fineprint {text-align: center; font-size: 0.8rem; color: #8A7A86; margin-top: 1rem;}
 
     [data-testid="stChatMessage"] {background: #FFFFFF; border: 1px solid #F0E1E7;
         border-radius: 18px; padding: 1rem 1.1rem; margin-bottom: 0.75rem;}
@@ -1163,8 +1172,6 @@ APP_CSS = """
     .mc-profile-value {font-size: 0.95rem; color: #2F2533; margin-top: 0.1rem;
         overflow-wrap: anywhere;}
     .mc-profile-empty {color: #A89AA4; font-style: italic;}
-    .mc-emergency {font-size: 0.8rem; color: #6B5A66; background: #FFF1F1;
-        border-left: 3px solid #D9534F; border-radius: 8px; padding: 0.6rem 0.75rem;}
 
     div[data-testid="stElementContainer"]:has(iframe[height="0"]),
     div.element-container:has(iframe[height="0"]) {display: none;}
@@ -1266,24 +1273,39 @@ def _render_sidebar() -> None:
             st.success(notice, icon=":material/check_circle:")
             st.session_state.profile_notice = None
         st.divider()
-        st.markdown(
-            '<div class="mc-emergency"><strong>Need urgent help?</strong> If symptoms are severe, '
-            "sudden, or getting worse (for example heavy bleeding, fainting, or severe pain), "
-            "contact emergency services now.</div>",
-            unsafe_allow_html=True,
-        )
-        st.write("")
         with st.expander("App maintenance"):
             st.caption("Refresh the health library after new guideline PDFs are added.")
             st.button("Refresh health library", on_click=_request_rebuild, width="stretch")
 
 
 def _render_brand() -> None:
+    """Logo returns to the start screen and refreshes the page."""
+    home, tag, badge = st.columns([2.0, 2.6, 1.8])
+    with home:
+        st.button(
+            "MediCare",
+            icon=":material/favorite:",
+            key="home",
+            help="Back to the start",
+            on_click=_start_new_conversation,
+            type="tertiary",
+            width="content",
+        )
+    with tag:
+        st.markdown(
+            '<div class="mc-brand-tag">women\'s health companion</div>',
+            unsafe_allow_html=True,
+        )
+    with badge:
+        st.markdown(
+            '<div class="mc-badge-wrap"><div class="mc-badge">🔒 Private, stays on this device</div></div>',
+            unsafe_allow_html=True,
+        )
     st.markdown(
-        '<div class="mc-brand">'
-        '<div class="mc-brand-name">MediCare <span>· women\'s health companion</span></div>'
-        '<div class="mc-badge">🔒 Private, stays on this device</div>'
-        "</div>",
+        '<div class="mc-notice"><strong>This is help, not a medical consultation.</strong> '
+        "MediCare does not diagnose, prescribe, or replace a clinician. "
+        "If symptoms are severe, sudden, or getting worse — heavy bleeding, fainting, "
+        "severe pain, chest pain, or trouble breathing — contact emergency services now.</div>",
         unsafe_allow_html=True,
     )
 
@@ -1460,9 +1482,7 @@ def _render_welcome(vectorstore: Chroma | None) -> None:
         st.markdown(
             '<div class="mc-topics">'
             + "".join(f'<span class="mc-topic">{topic}</span>' for topic in topics)
-            + "</div>"
-            '<div class="mc-fineprint">MediCare shares information, not a diagnosis. '
-            "Always confirm next steps with a clinician.</div>",
+            + "</div>",
             unsafe_allow_html=True,
         )
 
@@ -1526,7 +1546,7 @@ def _render_composer(analysis: dict, vectorstore: Chroma | None) -> None:
         if st.button(
             "Send",
             type="primary",
-            icon=":material/send:",
+            icon=":material/favorite:",
             disabled=vectorstore is None,
         ):
             message = followup.strip()
@@ -1559,13 +1579,6 @@ def _render_composer(analysis: dict, vectorstore: Chroma | None) -> None:
 
 def _render_conversation(analysis: dict, vectorstore: Chroma | None) -> None:
     """Chat thread: the first question, every answer, and the follow-up box."""
-    st.button(
-        "New conversation",
-        icon=":material/add:",
-        on_click=_start_new_conversation,
-        type="tertiary",
-    )
-
     thread = analysis.setdefault("thread", [])
     symptoms = analysis.get("symptoms", "")
     answer = analysis.get("answer")
@@ -1596,11 +1609,6 @@ def _render_conversation(analysis: dict, vectorstore: Chroma | None) -> None:
         _scroll_to_latest()
 
     _render_composer(analysis, vectorstore)
-    st.markdown(
-        '<div class="mc-fineprint">MediCare shares information, not a diagnosis. '
-        "Confirm any next step with a licensed clinician.</div>",
-        unsafe_allow_html=True,
-    )
 
 
 def main() -> None:

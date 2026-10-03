@@ -106,7 +106,7 @@ The sidebar holds the health profile: age (from date of birth), first day of the
 3. Click **Get guidance**. Retrieval starts only on that click.
 4. The conversation opens as a chat. Each reply ends with **Want to learn more?**: source chips linking to checked web pages from `checked_sources.json` and to the knowledge-base documents used for that reply.
 5. To continue, speak or type in **Anything else you'd like to ask?** and click **Send**. The page scrolls to the start of the newest reply.
-6. **New conversation** clears the thread and returns to the welcome screen.
+6. **MediCare** at the top of the page clears the thread and returns to the welcome screen.
 
 The color theme lives in `.streamlit/config.toml`.
 
