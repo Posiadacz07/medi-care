@@ -1,0 +1,9 @@
+streamlit
+chromadb
+langchain
+langchain-community
+langchain-core
+langchain-text-splitters
+pypdf
+faster-whisper
+datasets

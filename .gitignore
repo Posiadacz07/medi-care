@@ -1,0 +1,7 @@
+chroma_db/
+ingestion_stats.json
+.rebuild_requested
+__pycache__/
+.venv/
+*.pyc
+.DS_Store

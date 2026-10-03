@@ -1,0 +1,83 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1289 >>
+stream
+BT
+/F1 12 Tf
+16 TL
+54 760 Td
+(MediCare Local sample guideline) Tj
+T*
+(Original prototype text for the local knowledge base.) Tj
+T*
+(This file is not a clinical protocol and does not replace a clinician.) Tj
+T*
+() Tj
+T*
+(Emergency warning signs) Tj
+T*
+(If a person reports trouble breathing, chest pain, fainting, one-sided) Tj
+T*
+(weakness, confusion, severe bleeding, a rapidly worsening allergic) Tj
+T*
+(reaction, or thoughts of self-harm, advise them to contact emergency) Tj
+T*
+(services before any other step.) Tj
+T*
+() Tj
+T*
+(Symptom history to capture) Tj
+T*
+(Ask when the symptom started, how it has changed, how severe it is,) Tj
+T*
+(what makes it better or worse, and any medicines or conditions already) Tj
+T*
+(known. Record the person's own words after they have reviewed them.) Tj
+T*
+() Tj
+T*
+(Non-urgent supportive steps) Tj
+T*
+(For mild symptoms without emergency signs, rest, fluids, and noting) Tj
+T*
+(the timeline are reasonable while the person arranges clinical care.) Tj
+T*
+(Do not present this prototype as a diagnosis or a prescription.) Tj
+T*
+() Tj
+T*
+(Knowledge sources) Tj
+T*
+(Answers should stay grounded in retrieved local PDF passages and the) Tj
+T*
+(indexed question-answer pairs. If those sources do not cover the) Tj
+T*
+(question, say so plainly.) Tj
+T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001581 00000 n 
+trailer << /Size 6 /Root 1 0 R >>
+startxref
+1651
+%%EOF
