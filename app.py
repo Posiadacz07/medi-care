@@ -134,18 +134,21 @@ FOLLOWUP_PROMPT = PromptTemplate(
         "context",
         "symptoms",
         "profile",
-        "first_answer",
-        "history",
+        "complete_answers",
+        "earlier_followups",
         "followup",
+        "satisfied",
     ],
     template=(
         "You are MediCare Local, continuing a conversation on this device. "
         "You are not a physician. You do not diagnose, prescribe, or invent evidence.\n\n"
-        "The user has already received a first answer. They may say that some "
-        "suggestions were already discussed with a doctor, that they want to "
-        "avoid some options, or that the answer did not address the concern. "
+        "Read every complete answer below from beginning to end before you reply. "
+        "Account for the whole answer, not only the last sentence. The user's "
+        "follow-up may say that part of it was already discussed with a doctor, "
+        "that they want to avoid some options, or that the concern is still open. "
+        "Apply those points to the full answer.\n\n"
         "Use the retrieved context as your evidence. If it does not support a "
-        "claim, say so. Do not invent citations, doses, or study results.\n\n"
+        "claim, say so. Do not invent citations, doses, or study results. "
         "Do not tell the user to start, stop, or change a medicine or dose. "
         "Treat a doctor's earlier discussion as already settled unless the user "
         "asks to revisit it. Do not recommend an option the user wants to avoid. "
@@ -155,14 +158,15 @@ FOLLOWUP_PROMPT = PromptTemplate(
         "fainting, one-sided weakness, severe bleeding, confusion, a rapidly "
         "worsening allergic reaction, or thoughts of self-harm), tell the "
         "person to contact emergency services now.\n\n"
-        "Write a short conversational reply. Acknowledge the constraint, answer "
-        "the remaining concern, and end by asking whether this now addresses it.\n\n"
+        "Write a short conversational reply that revises the full answer in light "
+        "of the follow-up. End by asking whether this now addresses the concern.\n\n"
         "Health profile:\n{profile}\n\n"
         "Reviewed symptoms:\n{symptoms}\n\n"
         "Retrieved context:\n{context}\n\n"
-        "First answer:\n{first_answer}\n\n"
-        "Conversation so far:\n{history}\n\n"
-        "User follow-up:\n{followup}\n\n"
+        "Complete answers already given:\n{complete_answers}\n\n"
+        "Earlier follow-ups from the user:\n{earlier_followups}\n\n"
+        "User says the latest answer addresses the concern: {satisfied}\n\n"
+        "This follow-up:\n{followup}\n\n"
         "Response:"
     ),
 )
@@ -687,33 +691,34 @@ def generate_answer(symptoms: str, profile_text: str, retrieved: list[Document])
     return _invoke_medgemma(prompt)
 
 
-def _thread_transcript(thread: list[dict]) -> str:
-    if not thread:
-        return "No follow-up turns yet."
-    lines = []
-    for turn in thread:
-        speaker = "User" if turn.get("role") == "user" else "MedGemma"
-        lines.append(f"{speaker}: {turn.get('content', '')}")
-    return "\n\n".join(lines)
+def _complete_answers(analysis: dict) -> str:
+    """Every model reply in full, so a follow-up is applied to the whole answer."""
+    parts = [f"Answer 1:\n{analysis.get('answer', '')}"]
+    number = 2
+    for turn in analysis.get("thread") or []:
+        if turn.get("role") != "assistant":
+            continue
+        parts.append(f"Answer {number}:\n{turn.get('content', '')}")
+        number += 1
+    return "\n\n".join(parts)
 
 
-def _format_followup(doctor: str, avoid: str, message: str) -> str:
-    parts = []
-    if doctor.strip():
-        parts.append(f"Already discussed with a doctor: {doctor.strip()}")
-    if avoid.strip():
-        parts.append(f"Solutions to avoid: {avoid.strip()}")
-    if message.strip():
-        parts.append(f"What is still missing: {message.strip()}")
-    return "\n".join(parts)
+def _earlier_followups(thread: list[dict]) -> str:
+    messages = [
+        turn.get("content", "").strip()
+        for turn in thread
+        if turn.get("role") == "user" and turn.get("content", "").strip()
+    ]
+    return "\n\n".join(messages) or "None yet."
 
 
 def continue_conversation(
     vectorstore: Chroma,
     analysis: dict,
     followup: str,
+    satisfied: str,
 ) -> tuple[str, list[Document]]:
-    """Retrieve again for the follow-up and answer with the prior conversation."""
+    """Retrieve again and reply using the full answers plus this follow-up."""
     query = "\n\n".join(
         part
         for part in (analysis.get("symptoms", ""), analysis.get("profile", ""), followup)
@@ -727,9 +732,10 @@ def continue_conversation(
         context=context,
         symptoms=analysis.get("symptoms", ""),
         profile=analysis.get("profile", ""),
-        first_answer=analysis.get("answer", ""),
-        history=_thread_transcript(analysis.get("thread") or []),
+        complete_answers=_complete_answers(analysis),
+        earlier_followups=_earlier_followups(analysis.get("thread") or []),
         followup=followup,
+        satisfied=satisfied,
     )
     return _invoke_medgemma(prompt), retrieved
 
@@ -950,7 +956,10 @@ def _init_session_state() -> None:
         "analysis": None,
         "profile_notice": None,
         "followup_version": 0,
-        "force_followup": False,
+        "followup_text": "",
+        "followup_draft_version": 0,
+        "followup_audio_token": None,
+        "followup_transcription_error": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1090,12 +1099,32 @@ def _ollama_failure_message(exc: Exception) -> str:
     return message
 
 
+def _handle_followup_audio(version: int) -> None:
+    """Transcribe a follow-up recording into the single review box."""
+    audio = st.audio_input("Record a follow-up", key=f"followup_audio_{version}")
+    if audio is None:
+        return
+    token = _audio_token(audio)
+    if st.session_state.followup_audio_token == token:
+        return
+    with st.spinner("Transcribing your follow-up on this Mac..."):
+        try:
+            transcript = transcribe_upload(audio)
+        except Exception as exc:
+            st.session_state.followup_audio_token = token
+            st.session_state.followup_transcription_error = str(exc)
+            return
+    st.session_state.followup_audio_token = token
+    st.session_state.followup_transcription_error = None
+    st.session_state.followup_text = transcript
+    st.session_state.followup_draft_version += 1
+
+
 def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
-    """Ask whether the latest answer is enough, then continue on device."""
+    """One follow-up box, by voice or text, checked against the full answer."""
     thread = analysis.setdefault("thread", [])
     version = st.session_state.followup_version
     st.divider()
-    st.subheader("Does this address your concern?")
     if thread:
         for index, turn in enumerate(thread):
             role = "user" if turn.get("role") == "user" else "assistant"
@@ -1106,60 +1135,48 @@ def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
                     with st.expander(f"Sources for reply {index // 2 + 1}"):
                         _render_source_list(sources)
 
+    st.subheader("Follow-up")
     satisfied = st.radio(
         "Does this answer address your concern?",
         ["Not yet", "Yes"],
         key=f"concern_{version}_{len(thread)}",
         horizontal=True,
     )
-    if satisfied == "Yes" and not st.session_state.force_followup:
-        st.success("This answer stands. You can still add a follow-up if something is missing.")
-        if st.button("Add a follow-up anyway"):
-            st.session_state.force_followup = True
-            st.rerun()
-        return
-
     st.caption(
-        "Say what a doctor has already covered, which options you want to avoid, "
-        "or what is still missing. The next reply stays on this Mac and uses the "
-        "same local knowledge base."
+        "Record or type one message. You can say what you want to avoid, "
+        "what you already discussed with a doctor, or what still does not fit. "
+        "Check the transcript before you send it. The full answer above is sent with it."
     )
-    doctor = st.text_area(
-        "Already discussed with a doctor",
-        key=f"followup_doctor_{version}",
-        height=70,
-        placeholder="For example: my clinician already recommended ibuprofen for cramps",
-    )
-    avoid = st.text_area(
-        "Solutions I want to avoid",
-        key=f"followup_avoid_{version}",
-        height=70,
-        placeholder="For example: hormonal treatment, or anything that causes drowsiness",
-    )
-    message = st.text_area(
-        "What is still missing?",
-        key=f"followup_message_{version}_{len(thread)}",
-        height=90,
-        placeholder="Ask for a revision of the answer",
+    _handle_followup_audio(version)
+    if st.session_state.followup_transcription_error:
+        st.error(st.session_state.followup_transcription_error)
+    followup = st.text_area(
+        "Review and edit your follow-up:",
+        value=st.session_state.followup_text,
+        key=f"followup_draft_{version}_{st.session_state.followup_draft_version}",
+        height=140,
+        placeholder="For example: I already discussed painkillers with my doctor, and I want to avoid anything that makes me drowsy.",
     )
     if st.button("Continue conversation", type="primary", disabled=vectorstore is None):
-        followup = _format_followup(doctor, avoid, message)
-        if not followup:
-            st.warning(
-                "Add what you discussed with a doctor, what you want to avoid, "
-                "or what is still missing."
-            )
+        message = followup.strip()
+        if not message:
+            st.warning("Record or type a follow-up before sending it.")
             return
         if vectorstore is None:
             st.error("The local knowledge base is not ready.")
             return
         with st.spinner("Continuing with MedGemma on this Mac..."):
             try:
-                reply, documents = continue_conversation(vectorstore, analysis, followup)
+                reply, documents = continue_conversation(
+                    vectorstore,
+                    analysis,
+                    message,
+                    satisfied,
+                )
             except Exception as exc:
                 st.error(_ollama_failure_message(exc))
                 return
-        thread.append({"role": "user", "content": followup})
+        thread.append({"role": "user", "content": message})
         thread.append(
             {
                 "role": "assistant",
@@ -1167,7 +1184,8 @@ def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
                 "sources": _plain_sources(documents),
             }
         )
-        st.session_state.force_followup = False
+        st.session_state.followup_text = ""
+        st.session_state.followup_draft_version += 1
         st.rerun()
 
 
@@ -1326,7 +1344,10 @@ def main() -> None:
                     else:
                         status.update(label="Analysis complete", state="complete")
                         st.session_state.followup_version += 1
-                        st.session_state.force_followup = False
+                        st.session_state.followup_text = ""
+                        st.session_state.followup_draft_version += 1
+                        st.session_state.followup_audio_token = None
+                        st.session_state.followup_transcription_error = None
                         st.session_state.analysis = {
                             "symptoms": symptoms,
                             "profile": profile_text,
@@ -1353,9 +1374,8 @@ def main() -> None:
             _render_sources(analysis["sources"])
             _render_followup(analysis, vectorstore)
             st.caption(
-                "Text only. This prototype has no text-to-speech. "
-                "Follow-up messages stay in this browser session and are sent only "
-                "to Ollama on this Mac. Confirm any next step with a licensed clinician."
+                "Replies are text only. Follow-up recordings are transcribed on this Mac, "
+                "then sent only to Ollama on this Mac. Confirm any next step with a licensed clinician."
             )
 
 

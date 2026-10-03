@@ -103,7 +103,7 @@ On first launch the app downloads the three Hugging Face sources (up to the row 
 3. Edit the text in **Review and edit your symptoms**.
 4. Click **Analyze Symptoms**. Retrieval starts only on that click.
 5. Read the MedGemma answer. Open **Retrieved source chunks** to see the exact ChromaDB passages used.
-6. Answer **Does this answer address your concern?** If not, note what a doctor already covered, which options to avoid, or what is still missing, then click **Continue conversation**.
+6. Answer **Does this answer address your concern?** If you want a change, record or type one follow-up. You can mention options to avoid or what a doctor already covered. Edit the transcript, then click **Continue conversation**. The full answer is sent with that message.
 
 There is no text-to-speech. The answer is text only.
 
