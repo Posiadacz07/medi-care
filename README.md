@@ -1,6 +1,6 @@
-# MediCare Local
+# BetweenUs Local
 
-On-device symptom intake for a healthcare hackathon. The app records speech, lets the person correct the transcript, then answers from a private knowledge base. Audio, transcripts, embeddings, and retrieval stay on the Mac.
+On-device symptom intake for a HackYeah 2026. The app records speech, lets the person correct the transcript, then answers from a private knowledge base. Audio, transcripts, embeddings, and retrieval stay on the Mac.
 
 The assistant does not diagnose or prescribe. It is a prototype for demonstrating local retrieval, not a medical device.
 
@@ -24,16 +24,16 @@ medi-care/
 ├── checked_sources.json                                # Checked web pages shown under each answer
 ├── requirements.txt                                    # Python dependencies
 ├── knowledge_base/
-│   └── sample_clinical_safety_guideline.pdf            # Local PDF source (replace with your guidelines)
+│   └── *.pdf                                           # Local PDF sources
 ├── chroma_db/                                          # Created on first successful index (local)
+├── patient_profile.json                                # Create after filling user profile (local)
 └── ingestion_stats.json                                # Created after indexing (local)
+
 ```
 
-`chroma_db/` and `ingestion_stats.json` are generated at runtime and are gitignored.
+`chroma_db/`, `patient_profile.json` and `ingestion_stats.json` are generated at runtime and are gitignored.
 
 ## Knowledge base
-
-Both sources are merged into one Chroma collection named `medi_care_knowledge`.
 
 | Source | What is loaded | How it is prepared |
 | --- | --- | --- |
@@ -52,12 +52,12 @@ If `./knowledge_base` is missing, or Hugging Face cannot be reached, the app rep
 
 ## Requirements
 
-Hardware target: Apple Silicon Mac (tested against an M3 with 36 GB unified memory).
+Hardware target for local execution: Apple Silicon Mac (tested against an M3 with 36 GB unified memory).
 
 - Python 3.10 or newer
 - [Ollama](https://ollama.com) running locally
 - `ffmpeg` recommended, so Whisper can decode microphone audio
-- Internet on the first run only
+- Internet on the first run only - to download the models and datasets
 
 Python packages:
 
@@ -106,7 +106,7 @@ The sidebar holds the health profile: age (from date of birth), first day of the
 3. Click **Get guidance**. Retrieval starts only on that click.
 4. The conversation opens as a chat. Each reply ends with **Want to learn more?**: source chips linking to checked web pages from `checked_sources.json` and to the knowledge-base documents used for that reply.
 5. To continue, speak or type in **Anything else you'd like to ask?** and click **Send**. The page scrolls to the start of the newest reply.
-6. **MediCare** at the top of the page clears the thread and returns to the welcome screen.
+6. **BetweenUs** at the top of the page clears the thread and returns to the welcome screen.
 
 The color theme lives in `.streamlit/config.toml`.
 
