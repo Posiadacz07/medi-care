@@ -782,7 +782,7 @@ def _render_checked_sources(*texts: str) -> None:
         '<div class="source-row">' + "".join(chips) + "</div>",
         unsafe_allow_html=True,
     )
-    st.caption("Checked pages included with this app.")
+    # st.caption("Checked pages included with this app.")
 
 
 def continue_conversation(
@@ -1077,12 +1077,13 @@ def _render_sidebar(stats: dict | None, kb_error: str | None) -> None:
 
 
 def _render_sources(sources: list[dict]) -> None:
-    with st.expander("Retrieved source chunks", expanded=False):
-        st.caption(
-            "Exact chunks returned by similarity search over the single "
-            "local collection (PDF guidelines and Hugging Face QA)."
-        )
-        _render_source_list(sources)
+    # with st.expander("Retrieved source chunks", expanded=False):
+    #     st.caption(
+    #         "Exact chunks returned by similarity search over the single "
+    #         "local collection (PDF guidelines and Hugging Face QA)."
+    #     )
+        # _render_source_list(sources)
+    print("sources")
 
 
 def _render_profile() -> tuple[dict, str | None, str | None]:
@@ -1207,9 +1208,9 @@ def _render_followup(analysis: dict, vectorstore: Chroma | None) -> None:
                         analysis.get("symptoms", ""),
                     )
                 sources = turn.get("sources") or []
-                if sources:
-                    with st.expander(f"Retrieved passages for reply {index // 2 + 1}"):
-                        _render_source_list(sources)
+                # if sources:
+                #     with st.expander(f"Retrieved passages for reply {index // 2 + 1}"):
+                #         _render_source_list(sources)
 
     st.subheader("Follow-up")
     st.caption(
