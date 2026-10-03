@@ -1163,8 +1163,8 @@ APP_CSS = """
     .mc-chip-static .mc-chip-meta {color: #8A7A86;}
 
     section[data-testid="stSidebar"][aria-expanded="true"] {
-        min-width: clamp(320px, 24vw, 460px);
-        max-width: clamp(320px, 24vw, 460px);
+        min-width: clamp(240px, 24vw, 320px);
+        max-width: clamp(240px, 24vw, 320px);
     }
 
     .mc-side-title {font-size: 1.15rem; font-weight: 700; color: #2F2533; margin-bottom: 0.1rem;}
