@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# MediCare Local — on-device clinical intake prototype (Apple Silicon)
+# BetweenUs Local — on-device clinical intake prototype (Apple Silicon)
 #
 # Patient audio, transcripts, and retrieval stay on this machine.
 # The first launch needs internet once, to download Hugging Face knowledge
@@ -40,7 +40,7 @@ from faster_whisper import WhisperModel
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import OllamaEmbeddings
-from langchain_community.llms import Ollama
+from langchain_community.chat_models import ChatOllama
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -50,7 +50,7 @@ os.environ.setdefault("HF_DATASETS_DISABLE_PROGRESS_BARS", "1")
 # os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 # disable_progress_bars()
 
-logger = logging.getLogger("medicare")
+logger = logging.getLogger("betweenus")
 
 # --- Local models and paths -------------------------------------------------
 OLLAMA_BASE_URL = "http://localhost:11434"
@@ -105,7 +105,7 @@ HF_DESCRIPTIONS = {spec["repo"]: spec["description"] for spec in HF_SOURCES}
 CLINICAL_PROMPT = PromptTemplate(
     input_variables=["context", "symptoms", "profile"],
     template=(
-        "You are MediCare Local, an on-device clinical information assistant "
+        "You are BetweenUs Local, an on-device clinical information assistant "
         "for a healthcare prototype. You are not a physician. You do not "
         "diagnose, prescribe, or invent evidence.\n\n"
         "Use the retrieved context as your evidence. It was retrieved from a "
@@ -145,7 +145,7 @@ FOLLOWUP_PROMPT = PromptTemplate(
         "followup",
     ],
     template=(
-        "You are MediCare Local, continuing a conversation on this device. "
+        "You are BetweenUs Local, continuing a conversation on this device. "
         "You are not a physician. You do not diagnose, prescribe, or invent evidence.\n\n"
         "Read every complete answer below from beginning to end before you reply. "
         "Account for the whole answer, not only the last sentence. The user's "
@@ -672,7 +672,13 @@ def retrieve_context(vectorstore: Chroma, symptoms: str, profile_text: str) -> l
 
 
 def _invoke_medgemma(prompt: str) -> str:
-    llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
+    llm = ChatOllama(
+        model=LLM_MODEL, 
+        base_url=OLLAMA_BASE_URL, 
+        temperature=0.1,
+        num_predict=1000,
+        stop=["<eos>", "<end_of_turn>", "User:", "Patient:"]
+    )
     raw = llm.invoke(prompt)
     if isinstance(raw, str):
         answer = raw.strip()
@@ -1342,7 +1348,7 @@ def _render_brand(compact: bool) -> None:
         home, badge = st.columns([1, 1], vertical_alignment="center")
         with home:
             st.button(
-                "MediCare",
+                "BetweenUs",
                 icon=":material/favorite:",
                 key="home",
                 help="Back to the start",
@@ -1372,7 +1378,7 @@ def _render_brand(compact: bool) -> None:
     st.markdown(
         '<div class="mc-notice"><span class="mc-notice-icon">⚠️</span><div>'
         "<strong>This is help, not a medical consultation.</strong> "
-        "MediCare does not diagnose, prescribe, or replace a clinician. "
+        "BetweenUs does not diagnose, prescribe, or replace a clinician. "
         "If symptoms are severe, sudden, or getting worse (heavy bleeding, fainting, "
         "severe pain, chest pain, or trouble breathing), contact emergency services now.</div></div>",
         unsafe_allow_html=True,
@@ -1682,7 +1688,7 @@ def _render_conversation(analysis: dict, vectorstore: Chroma | None) -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="MediCare · Women's health companion",
+        page_title="BetweenUs · Women's health companion",
         page_icon="🌸",
         layout="wide",
         initial_sidebar_state="expanded",
