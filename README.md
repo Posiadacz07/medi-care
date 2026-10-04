@@ -183,6 +183,6 @@ Distributed under the **MIT License**. See [`LICENSE`](LICENSE.txt) for more inf
 ## Acknowledgements
 
 - Built with ❤️ during **HackYeah 2026**.
-- [Ollama](https://ollama.com) & [MedGemma](https://huggingface.co/) for open medical AI models.
+- [Ollama](https://ollama.com) & [MedGemma](https://deepmind.google/models/gemma/medgemma/) for open medical AI models.
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast on-device speech-to-text.
 - [LangChain](https://www.langchain.com/) & [ChromaDB](https://www.trychroma.com/) for the RAG architecture.
