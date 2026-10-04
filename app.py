@@ -42,7 +42,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.chat_models import ChatOllama
 from langchain_core.documents import Document
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -102,10 +102,9 @@ HF_SOURCES = (
 )
 HF_DESCRIPTIONS = {spec["repo"]: spec["description"] for spec in HF_SOURCES}
 
-CLINICAL_PROMPT = PromptTemplate(
-    input_variables=["context", "symptoms", "profile"],
-    template=(
-        "You are BetweenUs Local, an on-device clinical information assistant "
+CLINICAL_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+        "You are MediCare Local, an on-device clinical information assistant "
         "for a healthcare prototype. You are not a physician. You do not "
         "diagnose, prescribe, or invent evidence.\n\n"
         "Use the retrieved context as your evidence. It was retrieved from a "
@@ -129,23 +128,14 @@ CLINICAL_PROMPT = PromptTemplate(
         "3. What a clinician should evaluate, including conditions and medicines\n"
         "4. Limits of this prototype\n\n"
         "Health profile:\n{profile}\n\n"
-        "Retrieved context:\n{context}\n\n"
-        "Reviewed symptom description:\n{symptoms}\n\n"
-        "Response:"
+        "Retrieved context:\n{context}"
     ),
-)
+    ("user", "Reviewed symptom description:\n{symptoms}")
+])
 
-FOLLOWUP_PROMPT = PromptTemplate(
-    input_variables=[
-        "context",
-        "symptoms",
-        "profile",
-        "complete_answers",
-        "earlier_followups",
-        "followup",
-    ],
-    template=(
-        "You are BetweenUs Local, continuing a conversation on this device. "
+FOLLOWUP_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+        "You are MediCare Local, continuing a conversation on this device. "
         "You are not a physician. You do not diagnose, prescribe, or invent evidence.\n\n"
         "Read every complete answer below from beginning to end before you reply. "
         "Account for the whole answer, not only the last sentence. The user's "
@@ -167,14 +157,12 @@ FOLLOWUP_PROMPT = PromptTemplate(
         "of the follow-up. Stop when the reply is complete. Do not ask whether "
         "the user is satisfied.\n\n"
         "Health profile:\n{profile}\n\n"
-        "Reviewed symptoms:\n{symptoms}\n\n"
         "Retrieved context:\n{context}\n\n"
         "Complete answers already given:\n{complete_answers}\n\n"
-        "Earlier follow-ups from the user:\n{earlier_followups}\n\n"
-        "This follow-up:\n{followup}\n\n"
-        "Response:"
+        "Earlier follow-ups from the user:\n{earlier_followups}"
     ),
-)
+    ("user", "This follow-up:\n{followup}")
+])
 
 
 def _clean_text(value: object) -> str:
@@ -671,7 +659,7 @@ def retrieve_context(vectorstore: Chroma, symptoms: str, profile_text: str) -> l
     return vectorstore.similarity_search(query, k=RETRIEVAL_K)
 
 
-def _invoke_medgemma(prompt: str) -> str:
+def _invoke_medgemma(messages: list) -> str:
     llm = ChatOllama(
         model=LLM_MODEL, 
         base_url=OLLAMA_BASE_URL, 
@@ -679,7 +667,7 @@ def _invoke_medgemma(prompt: str) -> str:
         num_predict=1000,
         stop=["<eos>", "<end_of_turn>", "User:", "Patient:"]
     )
-    raw = llm.invoke(prompt)
+    raw = llm.invoke(messages)
     if isinstance(raw, str):
         answer = raw.strip()
     else:
@@ -694,7 +682,7 @@ def generate_answer(symptoms: str, profile_text: str, retrieved: list[Document])
     context = _context_from_docs(retrieved) or (
         "No relevant context was retrieved from the local knowledge base."
     )
-    prompt = CLINICAL_PROMPT.format(
+    prompt = CLINICAL_PROMPT.format_messages(
         context=context,
         symptoms=symptoms,
         profile=profile_text,
@@ -856,7 +844,7 @@ def continue_conversation(
     context = _context_from_docs(retrieved) or (
         "No relevant context was retrieved from the local knowledge base."
     )
-    prompt = FOLLOWUP_PROMPT.format(
+    prompt = FOLLOWUP_PROMPT.format_messages(
         context=context,
         symptoms=analysis.get("symptoms", ""),
         profile=analysis.get("profile", ""),
