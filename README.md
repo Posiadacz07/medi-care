@@ -1,121 +1,188 @@
-# BetweenUs Local
+# BetweenUs
 
-On-device symptom intake for a HackYeah 2026. The app records speech, lets the person correct the transcript, then answers from a private knowledge base. Audio, transcripts, embeddings, and retrieval stay on the Mac.
+[![Hackathon](https://img.shields.io/badge/Hackathon-HackYeah_2026-blue)](https://hackyeah.pl/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-brightgreen.svg)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.x-FF4B4B.svg)](https://streamlit.io/)
+[![Ollama](https://img.shields.io/badge/LLM-Ollama_Local-black)](https://ollama.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-The assistant does not diagnose or prescribe. It is a prototype for demonstrating local retrieval, not a medical device.
+An **on-device, privacy-first symptom intake & medical guidance prototype** built for **HackYeah 2026**.
 
-## Goal
+BetweenUs Local records user speech, lets the person review and adjust the transcript, and synthesizes answers using a private, locally running Retrieval-Augmented Generation (RAG) pipeline. **All audio, transcripts, vector embeddings, and LLM reasoning stay strictly on your local machine.**
 
-Give a clinician or demo judge a local-first flow:
+---
 
-1. The person describes symptoms with the microphone.
-2. Whisper transcribes the audio on CPU.
-3. The person reviews and edits the text before any model sees it.
-4. A single ChromaDB collection, built from local PDFs and Hugging Face question-answer data, supplies the evidence.
-5. MedGemma, running in Ollama, writes a text answer grounded in those retrieved chunks.
+> *MEDICAL DISCLAIMER:**  
+> This application is a technical prototype developed for demonstration and hackathon evaluation purposes. It **does not** provide medical advice, diagnosis, or treatment plans, and is **not** a certified medical device. Always consult a qualified healthcare professional with any questions regarding medical conditions.
 
-Patient audio is never sent to a cloud model. The only network use is the first download of public knowledge (Hugging Face datasets and the Whisper weights) and, if you choose, pulling Ollama models.
+---
 
-## Project structure
+## Key Features
+
+- **100% Local Execution**: Speech-to-text, vector search, and LLM generation run locally on CPU/Apple Silicon.
+- **Human-in-the-Loop Transcript Editing**: Review and edit Whisper transcription before any model processes it.
+- **RAG Grounding**: Answers are grounded in local guideline PDFs and curated medical QA pairs (ChromaDB).
+- **Personalized Context**: Keeps an offline, customizable health profile (age, medications, conditions) for tailored responses.
+- **Transparent Citations**: Every response displays verified reference links and knowledge base sources.
+- **Zero Audio Leakage**: Audio data is wiped after local processing; no telemetry, no cloud inference.
+
+---
+
+## Architecture & Data Flow
 
 ```text
-medi-care/
-├── app.py                                              # Streamlit app and RAG pipeline
-├── checked_sources.json                                # Checked web pages shown under each answer
-├── requirements.txt                                    # Python dependencies
-├── knowledge_base/
-│   └── *.pdf                                           # Local PDF sources
-├── chroma_db/                                          # Created on first successful index (local)
-├── patient_profile.json                                # Create after filling user profile (local)
-└── ingestion_stats.json                                # Created after indexing (local)
-
+[ Microphone ] ──> [ faster-whisper (CPU) ]
+                         │
+                         ▼
+             [ Human Review & Edit ]
+                         │
+                         ▼
+[ ChromaDB (Local Vector Store) ] ──> [ Context Retrieval ]
+[ Local Patient Profile JSON    ]            │
+                                             ▼
+                                  [ MedGemma via Ollama ]
+                                             │
+                                             ▼
+                                [ Streamlit UI + Source Chips ]
 ```
 
-`chroma_db/`, `patient_profile.json` and `ingestion_stats.json` are generated at runtime and are gitignored.
+---
 
-## Knowledge base
+## Project Structure
 
-| Source | What is loaded | How it is prepared |
-| --- | --- | --- |
-| Local PDFs | Every `*.pdf` in `./knowledge_base` | LangChain `PyPDFLoader`, then `RecursiveCharacterTextSplitter` |
-| `proadhikary/MENST` | `training2K.csv` | Question and answer formatted as text |
-| `parissharpe/naos-nutrition-training-pairs` | `naos-training-pairs-v2-1-flat.jsonl` | User and assistant turns formatted as text |
-| `lavita/medical-qa-datasets` | Config `medical_meadow_health_advice` | A sample of instruction / input / output rows |
-
-Each Hugging Face row becomes a LangChain `Document` whose text looks like:
-
-`Patient Question: …. Medical Recommendation: ….`
-
-`MAX_ROWS_PER_HF_SOURCE` in `app.py` defaults to 200 so the first embedding pass finishes on a laptop. Raise it if you want a larger index. A sample PDF is already in `knowledge_base/`; add your own guideline PDFs beside it.
-
-If `./knowledge_base` is missing, or Hugging Face cannot be reached, the app reports that source and continues with whatever else loaded. If nothing loaded, indexing stops with an error instead of building an empty collection.
-
-## Requirements
-
-Hardware target for local execution: Apple Silicon Mac (tested against an M3 with 36 GB unified memory).
-
-- Python 3.10 or newer
-- [Ollama](https://ollama.com) running locally
-- `ffmpeg` recommended, so Whisper can decode microphone audio
-- Internet on the first run only - to download the models and datasets
-
-Python packages:
-
-```bash
-pip install streamlit chromadb langchain langchain-community langchain-chroma \
-    langchain-core langchain-text-splitters pypdf faster-whisper datasets
+```text
+betweenus-local/
+├── app.py                      # Main Streamlit application and RAG pipeline
+├── checked_sources.json        # Curated external reference sources shown in UI
+├── requirements.txt            # Python dependencies
+├── knowledge_base/             # Drop your domain-specific clinical/guideline PDFs here
+│   └── *.pdf
+├── chroma_db/                  # Generated local ChromaDB vector store (gitignored)
+├── patient_profile.json        # User profile saved locally on disk (gitignored)
+├── ingestion_stats.json        # Indexing statistics & row tracking (gitignored)
+├── .streamlit/
+│   └── config.toml             # Streamlit visual theme settings
+└── README.md
 ```
 
-Or:
+---
+
+## Knowledge Base
+
+The local vector database merges your custom medical literature with public benchmark datasets:
+
+| Source | Target / Scope | Processing Method |
+| :--- | :--- | :--- |
+| **Local PDFs** | Any `*.pdf` in `./knowledge_base/` | PyPDFLoader + `RecursiveCharacterTextSplitter` |
+| **`proadhikary/MENST`** | `training2K.csv` | Formatted Q&A pairs |
+| **`parissharpe/naos-nutrition-training-pairs`** | `naos-training-pairs-v2-1-flat.jsonl` | Patient/Dietitian dialogue turns |
+| **`lavita/medical-qa-datasets`** | `medical_meadow_health_advice` | Instruction-following clinical pairs |
+
+Each dataset row is parsed into a LangChain document with the format:  
+`Patient Question: <text> Medical Recommendation: <text>`
+
+> **Configuration Tip:** Set `MAX_ROWS_PER_HF_SOURCE` in `app.py` (default: `200`) to increase or decrease the initial embedding index size.
+
+---
+
+## Prerequisites & Setup
+
+### System Requirements
+
+- **OS**: macOS (optimized for Apple Silicon / M-series), Linux, or Windows (WSL2 recommended).
+- **Python**: 3.10 or higher.
+- **Ollama**: Installed and running locally ([Download Ollama](https://ollama.com)).
+- **FFmpeg**: Required for audio recording conversion.
+  - macOS: `brew install ffmpeg`
+  - Ubuntu/Debian: `sudo apt install ffmpeg`
+
+---
+
+## Quickstart
+
+### 1. Clone the repository
 
 ```bash
+git clone https://github.com/Posiadacz07/medi-care.git
+cd medi-care
+```
+
+### 2. Set up virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Local models:
+### 3. Pull required local models
+
+Make sure Ollama is installed and running, then pull the LLM and embedding models:
 
 ```bash
 ollama pull medgemma
 ollama pull nomic-embed-text
 ```
 
-Speech-to-text uses faster-whisper `base` with `device="cpu"` and `compute_type="int8"`. Change `WHISPER_MODEL_SIZE` to `"small"` in `app.py` if you want a more accurate transcript and can spare the extra memory.
-
-## How to run
-
-From the project directory:
+### 4. Run the application
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-ollama serve
 streamlit run app.py
 ```
 
-If the Ollama app is already open, you can skip `ollama serve`.
+*Note: On the first start, the app will download sample Hugging Face pairs and embed them into `./chroma_db/`. All subsequent runs load immediately.*
 
-On first launch the app downloads the three Hugging Face sources (up to the row cap), embeds them with `nomic-embed-text`, and writes `./chroma_db`. Later launches reuse that index. After you add PDFs or change the row cap, open **App maintenance** at the bottom of the sidebar and click **Refresh health library**.
+---
 
-### Using the app
+## How to Use
 
-The sidebar holds the health profile: age (from date of birth), first day of the last period, health conditions, and medications. Click **Update my profile** to change them. On a first visit the editor opens automatically.
+1. **Set Up Health Profile**: Open the sidebar on your first visit to fill in basic metrics (age, conditions, current medications). Everything remains stored locally in `patient_profile.json`.
+2. **Record / Type Symptoms**: Click the microphone icon to record your symptoms in English, or type them directly into the input field.
+3. **Verify Transcript**: Edit the transcribed text in the review box if Whisper misheard any terminology.
+4. **Get Guidance**: Click **Get guidance** to run vector search and generate an answer grounded in the sources.
+5. **Explore References**: Inspect the **Want to learn more?** section at the bottom of the response to see source documents and verified links.
 
-1. On the welcome screen, tap the microphone and speak in English.
-2. Check the transcript in **Check what I heard, or type instead**, or type directly.
-3. Click **Get guidance**. Retrieval starts only on that click.
-4. The conversation opens as a chat. Each reply ends with **Want to learn more?**: source chips linking to checked web pages from `checked_sources.json` and to the knowledge-base documents used for that reply.
-5. To continue, speak or type in **Anything else you'd like to ask?** and click **Send**. The page scrolls to the start of the newest reply.
-6. **BetweenUs** at the top of the page clears the thread and returns to the welcome screen.
+---
 
-The color theme lives in `.streamlit/config.toml`.
+## Privacy & Local-First Principles
 
-There is no text-to-speech. The answer is text only.
+- **No Remote Audio**: Microphone recordings are written to a temporary local file, processed on CPU by `faster-whisper`, and deleted immediately.
+- **Zero Cloud LLM Inference**: Transcripts, profile data, and conversation history are dispatched strictly to `http://localhost:11434` (Ollama).
+- **Embedded Storage**: Vector indices are created via ChromaDB embedded directly in `./chroma_db/` without external database services.
+- **Internet Usage**: Internet connectivity is required **only** during first-time setup (downloading dependencies, Hugging Face subsets, and Ollama weights).
 
-## Privacy
+---
 
-- Date of birth, last period, illnesses, and medicines are saved only in `patient_profile.json` on this Mac. Age is calculated from the date of birth. The sidebar shows the saved profile on every visit and invites the person to update it. None of this is uploaded.
-- Microphone audio is written to a temporary file because faster-whisper needs a path, then the file is deleted.
-- The transcript and any follow-up conversation are sent only to Ollama on `localhost`. Follow-up turns stay in the browser session and are not written to disk.
-- ChromaDB is an embedded database in `./chroma_db`. It is not a remote server.
-- Hugging Face is contacted for public training text, not for patient recordings.
+## Configuration & Customization
+
+- **Whisper Model**: By default, faster-whisper runs `base` with `int8` quantization. Update `WHISPER_MODEL_SIZE = "small"` or `"medium"` in `app.py` for higher accuracy.
+- **Theme**: Customize styling, fonts, and primary colors in `.streamlit/config.toml`.
+- **Custom Documents**: Drop any healthcare whitepaper or medical guideline PDF into `knowledge_base/` and hit **Refresh health library** in the sidebar.
+
+---
+
+## Contributing
+
+Contributions, bug reports, and suggestions are welcome!
+
+1. Fork the Project.
+2. Create your Feature Branch (`git checkout -b feature/NewFeature`).
+3. Commit your Changes (`git commit -m 'Add NewFeature'`).
+4. Push to the Branch (`git push origin feature/NewFeature`).
+5. Open a Pull Request.
+
+---
+
+## License
+
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE.txt) for more information.
+
+---
+
+## Acknowledgements
+
+- Built with ❤️ during **HackYeah 2026**.
+- [Ollama](https://ollama.com) & [MedGemma](https://huggingface.co/) for open medical AI models.
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast on-device speech-to-text.
+- [LangChain](https://www.langchain.com/) & [ChromaDB](https://www.trychroma.com/) for the RAG architecture.
