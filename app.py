@@ -42,7 +42,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.chat_models import ChatOllama
 from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -102,68 +102,57 @@ HF_SOURCES = (
 )
 HF_DESCRIPTIONS = {spec["repo"]: spec["description"] for spec in HF_SOURCES}
 
-CLINICAL_PROMPT = ChatPromptTemplate.from_messages([
-    ("system",
-        "You are MediCare Local, an on-device clinical information assistant "
-        "for a healthcare prototype. You are not a physician. You do not "
-        "diagnose, prescribe, or invent evidence.\n\n"
-        "Use the retrieved context as your evidence. It was retrieved from a "
-        "local ChromaDB collection that merges clinical guideline PDFs and "
-        "curated medical question-answer pairs. If the context does not "
-        "support a claim, say that the local knowledge base does not cover it. "
-        "Do not invent citations, doses, or study results.\n\n"
-        "The health profile is information the user entered on this device. "
-        "Use age, the date of the last period, chronic conditions, and current "
-        "medicines to judge whether a retrieved passage applies. Do not tell "
-        "the user to start, stop, or change a medicine or dose. If a listed "
-        "condition or medicine may change what is safe, say that a clinician "
-        "needs to review it.\n\n"
-        "If the symptoms suggest an emergency (trouble breathing, chest pain, "
-        "fainting, one-sided weakness, severe bleeding, confusion, a rapidly "
-        "worsening allergic reaction, or thoughts of self-harm), tell the "
-        "person to contact emergency services now, before any other advice.\n\n"
-        "Write in plain English with these sections:\n"
-        "1. What to do right now\n"
-        "2. What the retrieved sources support for this profile\n"
-        "3. What a clinician should evaluate, including conditions and medicines\n"
-        "4. Limits of this prototype\n\n"
-        "Health profile:\n{profile}\n\n"
-        "Retrieved context:\n{context}"
-    ),
-    ("user", "Reviewed symptom description:\n{symptoms}")
-])
-
-FOLLOWUP_PROMPT = ChatPromptTemplate.from_messages([
-    ("system",
-        "You are MediCare Local, continuing a conversation on this device. "
+CLINICAL_PROMPT = PromptTemplate(
+    input_variables=["context", "symptoms", "profile"],
+    template=(
+        "You are BetweenUs Local, an on-device clinical information assistant. "
         "You are not a physician. You do not diagnose, prescribe, or invent evidence.\n\n"
-        "Read every complete answer below from beginning to end before you reply. "
-        "Account for the whole answer, not only the last sentence. The user's "
-        "follow-up may say that part of it was already discussed with a doctor, "
-        "that they want to avoid some options, or that the concern is still open. "
-        "Apply those points to the full answer.\n\n"
-        "Use the retrieved context as your evidence. If it does not support a "
-        "claim, say so. Do not invent citations, doses, or study results. "
-        "Do not tell the user to start, stop, or change a medicine or dose. "
-        "Treat a doctor's earlier discussion as already settled unless the user "
-        "asks to revisit it. Do not recommend an option the user wants to avoid. "
-        "If the retrieved context only supports an avoided option, say that and "
-        "leave the decision with a clinician.\n\n"
-        "If the symptoms suggest an emergency (trouble breathing, chest pain, "
-        "fainting, one-sided weakness, severe bleeding, confusion, a rapidly "
-        "worsening allergic reaction, or thoughts of self-harm), tell the "
-        "person to contact emergency services now.\n\n"
-        "Write a short conversational reply that revises the full answer in light "
-        "of the follow-up. Stop when the reply is complete. Do not ask whether "
-        "the user is satisfied.\n\n"
+        "INSTRUCTIONS FOR YOUR RESPONSE:\n"
+        "- Provide a detailed, comprehensive, and concrete explanation.\n"
+        "- Use Markdown formatting extensively: use **bold text** for key medical terms and emphasis, and use bullet points for lists.\n"
+        "- Use the retrieved context as your evidence. If it doesn't support a claim, say so.\n"
+        "- Use the health profile (age, period, conditions) to contextualize your advice.\n"
+        "- If symptoms suggest an emergency, tell the person to contact emergency services now.\n\n"
+        "Write your detailed response strictly using these labeled sections:\n"
+        "**1. What to do right now**\n"
+        "**2. What the retrieved sources support for this profile**\n"
+        "**3. What a clinician should evaluate**\n"
+        "**4. Limits of this prototype**\n\n"
         "Health profile:\n{profile}\n\n"
         "Retrieved context:\n{context}\n\n"
-        "Complete answers already given:\n{complete_answers}\n\n"
-        "Earlier follow-ups from the user:\n{earlier_followups}"
+        "Reviewed symptom description:\n{symptoms}\n\n"
+        "Response:"
     ),
-    ("user", "This follow-up:\n{followup}")
-])
+)
 
+FOLLOWUP_PROMPT = PromptTemplate(
+    input_variables=[
+        "context",
+        "symptoms",
+        "profile",
+        "complete_answers",
+        "earlier_followups",
+        "followup",
+    ],
+    template=(
+        "You are BetweenUs Local, continuing a conversation on this device. "
+        "You are not a physician. You do not diagnose or prescribe.\n\n"
+        "INSTRUCTIONS FOR YOUR RESPONSE:\n"
+        "- Provide a detailed, concrete, and comprehensive reply.\n"
+        "- Use Markdown formatting extensively: use **bold text** for key terms and use bullet points to make the text readable.\n"
+        "- Read every complete answer below and apply the user's follow-up to the whole context.\n"
+        "- Use the retrieved context as your evidence.\n"
+        "- Do not recommend an option the user wants to avoid.\n\n"
+        "Write a conversational but detailed reply that revises the previous answers in light of the follow-up.\n\n"
+        "Health profile:\n{profile}\n\n"
+        "Reviewed symptoms:\n{symptoms}\n\n"
+        "Retrieved context:\n{context}\n\n"
+        "Complete answers already given:\n{complete_answers}\n\n"
+        "Earlier follow-ups from the user:\n{earlier_followups}\n\n"
+        "This follow-up:\n{followup}\n\n"
+        "Response:"
+    ),
+)
 
 def _clean_text(value: object) -> str:
     """Flatten a dataset cell into a single line of text."""
@@ -659,19 +648,21 @@ def retrieve_context(vectorstore: Chroma, symptoms: str, profile_text: str) -> l
     return vectorstore.similarity_search(query, k=RETRIEVAL_K)
 
 
-def _invoke_medgemma(messages: list) -> str:
+def _invoke_medgemma(prompt: str) -> str:
     llm = ChatOllama(
         model=LLM_MODEL, 
         base_url=OLLAMA_BASE_URL, 
         temperature=0.1,
-        num_predict=1000,
-        stop=["<eos>", "<end_of_turn>", "User:", "Patient:"]
+        num_predict=1500,
+        stop=["<eos>", "<end_of_turn>", "User:", "Patient:", "\n\nHealth profile:"]
     )
-    raw = llm.invoke(messages)
+    raw = llm.invoke(prompt)
+    
     if isinstance(raw, str):
         answer = raw.strip()
     else:
         answer = str(getattr(raw, "content", raw)).strip()
+        
     if not answer:
         raise RuntimeError("MedGemma returned an empty response.")
     return answer
@@ -682,7 +673,7 @@ def generate_answer(symptoms: str, profile_text: str, retrieved: list[Document])
     context = _context_from_docs(retrieved) or (
         "No relevant context was retrieved from the local knowledge base."
     )
-    prompt = CLINICAL_PROMPT.format_messages(
+    prompt = CLINICAL_PROMPT.format(
         context=context,
         symptoms=symptoms,
         profile=profile_text,
@@ -844,7 +835,7 @@ def continue_conversation(
     context = _context_from_docs(retrieved) or (
         "No relevant context was retrieved from the local knowledge base."
     )
-    prompt = FOLLOWUP_PROMPT.format_messages(
+    prompt = FOLLOWUP_PROMPT.format(
         context=context,
         symptoms=analysis.get("symptoms", ""),
         profile=analysis.get("profile", ""),
